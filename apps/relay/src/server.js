@@ -85,11 +85,57 @@ const start = async () => {
 
   const wsServer = new WebSocketServer({ noServer: true });
 
+  const handleDeviceMessage = async (deviceId, data) => {
+    let message = null;
+
+    try {
+      message = JSON.parse(data.toString());
+    } catch (error) {
+      fastify.log.warn({ error }, "device_message_parse_failed");
+      return;
+    }
+
+    if (!message || typeof message !== "object") {
+      return;
+    }
+
+    if (message.device_id && message.device_id !== deviceId) {
+      fastify.log.warn(
+        { deviceId, messageDeviceId: message.device_id },
+        "device_message_mismatch"
+      );
+      return;
+    }
+
+    if (message.type === "snapshot.update") {
+      await storage.saveSnapshot({
+        deviceId,
+        agentStates: message.agent_states ?? [],
+        sessionSummary: message.session_summary ?? null,
+        ts: message.ts,
+      });
+      return;
+    }
+
+    if (message.type === "event.append") {
+      await storage.appendEvent({
+        deviceId,
+        eventType: message.event_type,
+        severity: message.severity,
+        payload: message.payload,
+        ts: message.ts,
+      });
+    }
+  };
+
   wsServer.on("connection", async (socket, request) => {
     const { path, searchParams } = parseRequestInfo(request);
 
     if (path === "/ws/device") {
       const deviceId = searchParams.get("device_id");
+      socket.on("message", (data) => {
+        void handleDeviceMessage(deviceId, data);
+      });
       socket.send(JSON.stringify({ type: "device.hello", device_id: deviceId }));
       return;
     }

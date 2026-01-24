@@ -1,4 +1,56 @@
-# AGENTS
+# PROJECT KNOWLEDGE BASE
+
+**Generated:** 2026-01-24
+**Commit:** 4c1441f
+**Branch:** master
+
+## OVERVIEW
+RemoteCode is a self-hosted, view-only mobile companion for OpenCode: a desktop plugin streams state to a Fastify + WebSocket relay with Postgres storage, and an iOS app subscribes for live status.
+
+## STRUCTURE
+```
+./
+├── apps/relay/    # Fastify + WS relay + Postgres storage
+├── apps/plugin/   # OpenCode plugin state stub
+├── apps/ios/      # SwiftUI app placeholder
+└── docs/plans/    # Architecture/design notes
+```
+
+## WHERE TO LOOK
+| Task | Location | Notes |
+|------|----------|-------|
+| Pairing + WS auth | apps/relay/src/server.js | REST + WebSocket handshake paths |
+| Token/storage logic | apps/relay/src/storage.js | in-memory + Postgres implementations |
+| Relay configuration | apps/relay/src/config.js | env defaults + tuning |
+| Database schema | apps/relay/migrations/001_init.sql | pairing/viewer/device tables |
+| v1 product scope | docs/plans/2026-01-22-opencode-mobile-companion-design.md | goals + non-goals |
+
+## CONVENTIONS
+- Relay is ESM-only (`"type": "module"`), keep imports with `.js` extensions.
+- REST payloads use snake_case keys (e.g., `device_id`, `pairing_token`).
+- WebSocket paths are `/ws/device` and `/ws/viewer` with query tokens.
+- No file contents in v1; secrets must be redacted before transmit.
+- Desktop plugin never accepts inbound connections; only outbound to relay.
+
+## ANTI-PATTERNS (THIS PROJECT)
+- Do not add command execution or push notifications in v1.
+- Do not stream raw stdout/logs or file contents by default.
+- Avoid refactors that cross component boundaries (plugin/relay/iOS).
+
+## UNIQUE STYLES
+- Storage uses a 5-minute pairing TTL and 30-day viewer TTL in `apps/relay/src/storage.js`.
+- Relay defaults to in-memory storage unless `DATABASE_URL` is set.
+
+## COMMANDS
+```bash
+npm --prefix apps/relay run dev
+npm --prefix apps/relay run migrate
+npm --prefix apps/plugin run dev
+```
+
+## NOTES
+- Relay token cleanup interval uses `TOKEN_CLEANUP_INTERVAL_MS` (default 1h).
+- iOS app is not implemented yet; `.env`/`.gitkeep` only.
 
 ## Implementation Architecture
 - **Three-tier system**: OpenCode plugin (desktop) → cloud relay → iOS app.
