@@ -1,0 +1,14 @@
+{
+  "name": "remotecode-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.js",
+    "migrate": "node src/migrate.js"
+  },
+  "dependencies": {
+    "fastify": "^4.25.0",
+    "pg": "^8.11.3",
+    "ws": "^8.16.0"
+  }
+}
