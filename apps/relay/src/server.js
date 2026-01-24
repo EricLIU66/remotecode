@@ -2,44 +2,10 @@ import Fastify from "fastify";
 import { WebSocketServer } from "ws";
 import { config } from "./config.js";
 import { createStorage } from "./storage.js";
+import { redactMessage } from "./redaction.js";
 
 const fastify = Fastify({ logger: true });
 const cleanupIntervalMs = config.tokenCleanupIntervalMs;
-const redactKeyPattern = /(token|secret|password|api[_-]?key)/i;
-
-const redactObject = (value, key) => {
-  if (key && redactKeyPattern.test(key)) {
-    return "[redacted]";
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => redactObject(item));
-  }
-
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([childKey, childValue]) => [
-        childKey,
-        redactObject(childValue, childKey),
-      ])
-    );
-  }
-
-  return value;
-};
-
-const redactMessage = (message) => {
-  if (!message || typeof message !== "object") {
-    return message;
-  }
-
-  return {
-    ...message,
-    agent_states: redactObject(message.agent_states),
-    session_summary: redactObject(message.session_summary),
-    payload: redactObject(message.payload),
-  };
-};
 
 const parseRequestInfo = (request) => {
   const requestUrl = request.url ?? "/";
