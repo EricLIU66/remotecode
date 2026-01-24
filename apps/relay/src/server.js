@@ -4,7 +4,7 @@ import { config } from "./config.js";
 import { createStorage } from "./storage.js";
 
 const fastify = Fastify({ logger: true });
-const cleanupIntervalMs = 60 * 60 * 1000;
+const cleanupIntervalMs = config.tokenCleanupIntervalMs;
 
 const parseRequestInfo = (request) => {
   const requestUrl = request.url ?? "/";
