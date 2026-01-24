@@ -5,6 +5,41 @@ import { createStorage } from "./storage.js";
 
 const fastify = Fastify({ logger: true });
 const cleanupIntervalMs = config.tokenCleanupIntervalMs;
+const redactKeyPattern = /(token|secret|password|api[_-]?key)/i;
+
+const redactObject = (value, key) => {
+  if (key && redactKeyPattern.test(key)) {
+    return "[redacted]";
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => redactObject(item));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, childValue]) => [
+        childKey,
+        redactObject(childValue, childKey),
+      ])
+    );
+  }
+
+  return value;
+};
+
+const redactMessage = (message) => {
+  if (!message || typeof message !== "object") {
+    return message;
+  }
+
+  return {
+    ...message,
+    agent_states: redactObject(message.agent_states),
+    session_summary: redactObject(message.session_summary),
+    payload: redactObject(message.payload),
+  };
+};
 
 const parseRequestInfo = (request) => {
   const requestUrl = request.url ?? "/";
@@ -107,24 +142,33 @@ const start = async () => {
       return;
     }
 
-    if (message.type === "snapshot.update") {
-      await storage.saveSnapshot({
-        deviceId,
-        agentStates: message.agent_states ?? [],
-        sessionSummary: message.session_summary ?? null,
-        ts: message.ts,
-      });
-      return;
-    }
+    const sanitizedMessage = redactMessage(message);
 
-    if (message.type === "event.append") {
-      await storage.appendEvent({
-        deviceId,
-        eventType: message.event_type,
-        severity: message.severity,
-        payload: message.payload,
-        ts: message.ts,
-      });
+    try {
+      if (sanitizedMessage.type === "snapshot.update") {
+        await storage.saveSnapshot({
+          deviceId,
+          agentStates: sanitizedMessage.agent_states ?? [],
+          sessionSummary: sanitizedMessage.session_summary ?? null,
+          ts: sanitizedMessage.ts,
+        });
+        return;
+      }
+
+      if (sanitizedMessage.type === "event.append") {
+        await storage.appendEvent({
+          deviceId,
+          eventType: sanitizedMessage.event_type,
+          severity: sanitizedMessage.severity,
+          payload: sanitizedMessage.payload,
+          ts: sanitizedMessage.ts,
+        });
+      }
+    } catch (error) {
+      fastify.log.error(
+        { error, deviceId, messageType: sanitizedMessage?.type },
+        "device_message_storage_failed"
+      );
     }
   };
 

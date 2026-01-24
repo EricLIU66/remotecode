@@ -167,14 +167,12 @@ const renderPairingQr = async ({ relayUrl, deviceId, pairingToken, expiresAt, lo
       type: "terminal",
       errorCorrectionLevel: "M",
     });
-    logger.info?.("pairing_qr_payload", payload);
     if (expiresAt) {
       logger.info?.("pairing_qr_expires_at", expiresAt);
     }
     logger.info?.(`\n${qr}`);
   } catch (error) {
     logger.warn?.("pairing_qr_failed", error);
-    logger.info?.("pairing_qr_payload", payload);
   }
 };
 
@@ -234,6 +232,13 @@ export const createRelayClient = ({
     }, reconnectDelayMs);
   };
 
+  const clearConnection = (connection) => {
+    if (socket === connection) {
+      socket = null;
+    }
+    isConnecting = false;
+  };
+
   const sendMessage = (message) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return false;
@@ -268,13 +273,15 @@ export const createRelayClient = ({
     });
 
     connection.on("close", () => {
-      socket = null;
-      isConnecting = false;
+      clearConnection(connection);
       scheduleReconnect();
     });
 
     connection.on("error", (error) => {
       logger?.error?.("relay:connection_error", error);
+      clearConnection(connection);
+      connection.close();
+      scheduleReconnect();
     });
   };
 
@@ -346,7 +353,7 @@ export const createPlugin = ({
       currentDeviceToken = pairing.deviceToken;
 
       if (pairing.pairingToken) {
-        logger.info?.("pairing_token", pairing.pairingToken, "expires_at", pairing.expiresAt);
+        logger.info?.("pairing_token_received", { expires_at: pairing.expiresAt });
         await renderPairingQr({
           relayUrl,
           deviceId: pairing.deviceId,
