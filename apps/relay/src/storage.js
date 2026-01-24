@@ -4,6 +4,7 @@ import { config } from "./config.js";
 
 const pairingTtlMs = 5 * 60 * 1000;
 const viewerTtlMs = 30 * 24 * 60 * 60 * 1000;
+const maxEventsPerDevice = 500;
 
 const nowMs = () => Date.now();
 const createToken = () => crypto.randomBytes(24).toString("hex");
@@ -12,6 +13,8 @@ const createInMemoryStorage = () => {
   const devices = new Map();
   const pairingTokens = new Map();
   const viewerTokens = new Map();
+  const snapshots = new Map();
+  const events = new Map();
 
   const cleanupExpiredTokens = () => {
     for (const [token, entry] of pairingTokens) {
@@ -118,12 +121,45 @@ const createInMemoryStorage = () => {
     return entry.deviceId;
   };
 
+  const saveSnapshot = ({ deviceId, agentStates, sessionSummary, ts } = {}) => {
+    if (!deviceId) {
+      return;
+    }
+
+    snapshots.set(deviceId, {
+      deviceId,
+      agentStates,
+      sessionSummary,
+      ts: ts ?? new Date().toISOString(),
+    });
+  };
+
+  const appendEvent = ({ deviceId, eventType, severity, payload, ts } = {}) => {
+    if (!deviceId || !eventType) {
+      return;
+    }
+
+    const entry = {
+      deviceId,
+      eventType,
+      severity: severity ?? "info",
+      payload,
+      ts: ts ?? new Date().toISOString(),
+    };
+
+    const existing = events.get(deviceId) ?? [];
+    const nextEvents = [entry, ...existing].slice(0, maxEventsPerDevice);
+    events.set(deviceId, nextEvents);
+  };
+
   return {
     cleanupExpiredTokens,
     createPairingRequest,
     confirmPairing,
     validateDevice,
     validateViewer,
+    saveSnapshot,
+    appendEvent,
     kind: "memory",
   };
 };
@@ -245,12 +281,40 @@ const createPostgresStorage = async () => {
     return deviceId;
   };
 
+  const saveSnapshot = async ({ deviceId, agentStates, sessionSummary, ts } = {}) => {
+    if (!deviceId) {
+      return;
+    }
+
+    const timestamp = ts ? new Date(ts) : new Date();
+
+    await pool.query(
+      "INSERT INTO snapshots (device_id, agent_states, session_summary, ts) VALUES ($1, $2, $3, $4) ON CONFLICT (device_id) DO UPDATE SET agent_states = $2, session_summary = $3, ts = $4",
+      [deviceId, agentStates ?? [], sessionSummary ?? null, timestamp]
+    );
+  };
+
+  const appendEvent = async ({ deviceId, eventType, severity, payload, ts } = {}) => {
+    if (!deviceId || !eventType) {
+      return;
+    }
+
+    const timestamp = ts ? new Date(ts) : new Date();
+
+    await pool.query(
+      "INSERT INTO events (device_id, event_type, severity, payload, ts) VALUES ($1, $2, $3, $4, $5)",
+      [deviceId, eventType, severity ?? "info", payload ?? {}, timestamp]
+    );
+  };
+
   return {
     cleanupExpiredTokens,
     createPairingRequest,
     confirmPairing,
     validateDevice,
     validateViewer,
+    saveSnapshot,
+    appendEvent,
     kind: "postgres",
   };
 };

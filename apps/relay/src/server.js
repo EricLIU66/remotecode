@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { WebSocketServer } from "ws";
 import { config } from "./config.js";
 import { createStorage } from "./storage.js";
+import { redactMessage } from "./redaction.js";
 
 const fastify = Fastify({ logger: true });
 const cleanupIntervalMs = config.tokenCleanupIntervalMs;
@@ -85,11 +86,66 @@ const start = async () => {
 
   const wsServer = new WebSocketServer({ noServer: true });
 
+  const handleDeviceMessage = async (deviceId, data) => {
+    let message = null;
+
+    try {
+      message = JSON.parse(data.toString());
+    } catch (error) {
+      fastify.log.warn({ error }, "device_message_parse_failed");
+      return;
+    }
+
+    if (!message || typeof message !== "object") {
+      return;
+    }
+
+    if (message.device_id && message.device_id !== deviceId) {
+      fastify.log.warn(
+        { deviceId, messageDeviceId: message.device_id },
+        "device_message_mismatch"
+      );
+      return;
+    }
+
+    const sanitizedMessage = redactMessage(message);
+
+    try {
+      if (sanitizedMessage.type === "snapshot.update") {
+        await storage.saveSnapshot({
+          deviceId,
+          agentStates: sanitizedMessage.agent_states ?? [],
+          sessionSummary: sanitizedMessage.session_summary ?? null,
+          ts: sanitizedMessage.ts,
+        });
+        return;
+      }
+
+      if (sanitizedMessage.type === "event.append") {
+        await storage.appendEvent({
+          deviceId,
+          eventType: sanitizedMessage.event_type,
+          severity: sanitizedMessage.severity,
+          payload: sanitizedMessage.payload,
+          ts: sanitizedMessage.ts,
+        });
+      }
+    } catch (error) {
+      fastify.log.error(
+        { error, deviceId, messageType: sanitizedMessage?.type },
+        "device_message_storage_failed"
+      );
+    }
+  };
+
   wsServer.on("connection", async (socket, request) => {
     const { path, searchParams } = parseRequestInfo(request);
 
     if (path === "/ws/device") {
       const deviceId = searchParams.get("device_id");
+      socket.on("message", (data) => {
+        void handleDeviceMessage(deviceId, data);
+      });
       socket.send(JSON.stringify({ type: "device.hello", device_id: deviceId }));
       return;
     }
