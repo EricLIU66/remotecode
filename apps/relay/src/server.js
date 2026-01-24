@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { createStorage } from "./storage.js";
 
 const fastify = Fastify({ logger: true });
+const cleanupIntervalMs = 60 * 60 * 1000;
 
 const parseRequestInfo = (request) => {
   const requestUrl = request.url ?? "/";
@@ -16,36 +17,71 @@ fastify.get("/health", async () => ({ status: "ok" }));
 const start = async () => {
   const storage = await createStorage();
 
-  fastify.post("/pairing/request", async () => {
-    const { deviceId, deviceToken, pairingToken, expiresAtMs } =
-      await storage.createPairingRequest();
+  const cleanupTimer = setInterval(() => {
+    void storage.cleanupExpiredTokens();
+  }, cleanupIntervalMs);
+  cleanupTimer.unref?.();
 
-    return {
-      device_id: deviceId,
-      device_token: deviceToken,
-      pairing_token: pairingToken,
-      expires_at: new Date(expiresAtMs).toISOString(),
-      storage: storage.kind,
-    };
-  });
+  fastify.post(
+    "/pairing/request",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            device_id: { type: "string" },
+            device_token: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request) => {
+      const { device_id: deviceId, device_token: deviceToken } = request.body ?? {};
+      const { deviceId: resolvedDeviceId, deviceToken: resolvedDeviceToken, pairingToken, expiresAtMs } =
+        await storage.createPairingRequest({ deviceId, deviceToken });
 
-  fastify.post("/pairing/confirm", async (request, reply) => {
-    const { pairing_token: pairingToken } = request.body ?? {};
-
-    if (!pairingToken || typeof pairingToken !== "string") {
-      return reply.status(400).send({ error: "pairing_token_required" });
+      return {
+        device_id: resolvedDeviceId,
+        device_token: resolvedDeviceToken,
+        pairing_token: pairingToken,
+        expires_at: new Date(expiresAtMs).toISOString(),
+      };
     }
+  );
 
-    const confirmation = await storage.confirmPairing(pairingToken);
-    if (!confirmation) {
-      return reply.status(400).send({ error: "pairing_token_invalid" });
+  fastify.post(
+    "/pairing/confirm",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["pairing_token"],
+          properties: {
+            pairing_token: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { pairing_token: pairingToken } = request.body ?? {};
+
+      if (!pairingToken || typeof pairingToken !== "string") {
+        return reply.status(400).send({ error: "pairing_token_required" });
+      }
+
+      const confirmation = await storage.confirmPairing(pairingToken);
+      if (!confirmation) {
+        return reply.status(400).send({ error: "pairing_token_invalid" });
+      }
+
+      return {
+        viewer_token: confirmation.viewerToken,
+        device_id: confirmation.deviceId,
+      };
     }
-
-    return {
-      viewer_token: confirmation.viewerToken,
-      device_id: confirmation.deviceId,
-    };
-  });
+  );
 
   const wsServer = new WebSocketServer({ noServer: true });
 

@@ -13,26 +13,56 @@ const createInMemoryStorage = () => {
   const pairingTokens = new Map();
   const viewerTokens = new Map();
 
-  const createPairingRequest = () => {
-    const deviceId = crypto.randomUUID();
-    const deviceToken = createToken();
+  const cleanupExpiredTokens = () => {
+    for (const [token, entry] of pairingTokens) {
+      if (entry.expiresAtMs <= nowMs()) {
+        pairingTokens.delete(token);
+      }
+    }
+
+    for (const [token, entry] of viewerTokens) {
+      if (entry.expiresAtMs <= nowMs()) {
+        viewerTokens.delete(token);
+      }
+    }
+  };
+
+  const resolveDevice = ({ deviceId, deviceToken } = {}) => {
+    if (!deviceId || !deviceToken) {
+      return null;
+    }
+
+    const device = devices.get(deviceId);
+    if (!device || device.deviceToken !== deviceToken) {
+      return null;
+    }
+
+    return { deviceId, deviceToken };
+  };
+
+  const createPairingRequest = ({ deviceId, deviceToken } = {}) => {
+    const existingDevice = resolveDevice({ deviceId, deviceToken });
+    const resolvedDeviceId = existingDevice?.deviceId ?? crypto.randomUUID();
+    const resolvedDeviceToken = existingDevice?.deviceToken ?? createToken();
     const pairingToken = createToken();
     const expiresAtMs = nowMs() + pairingTtlMs;
 
-    devices.set(deviceId, {
-      deviceToken,
-      createdAtMs: nowMs(),
-      retentionDays: 30,
-    });
+    if (!existingDevice) {
+      devices.set(resolvedDeviceId, {
+        deviceToken: resolvedDeviceToken,
+        createdAtMs: nowMs(),
+        retentionDays: 30,
+      });
+    }
 
     pairingTokens.set(pairingToken, {
-      deviceId,
+      deviceId: resolvedDeviceId,
       expiresAtMs,
     });
 
     return {
-      deviceId,
-      deviceToken,
+      deviceId: resolvedDeviceId,
+      deviceToken: resolvedDeviceToken,
       pairingToken,
       expiresAtMs,
     };
@@ -89,6 +119,7 @@ const createInMemoryStorage = () => {
   };
 
   return {
+    cleanupExpiredTokens,
     createPairingRequest,
     confirmPairing,
     validateDevice,
@@ -100,35 +131,50 @@ const createInMemoryStorage = () => {
 const createPostgresStorage = async () => {
   const pool = new Pool({ connectionString: config.databaseUrl });
 
-  await pool.query(
-    "CREATE TABLE IF NOT EXISTS devices (device_id text primary key, device_token text not null, created_at timestamptz not null, retention_days integer not null)"
-  );
-  await pool.query(
-    "CREATE TABLE IF NOT EXISTS pairing_tokens (token text primary key, device_id text not null references devices(device_id), expires_at timestamptz not null)"
-  );
-  await pool.query(
-    "CREATE TABLE IF NOT EXISTS viewer_tokens (token text primary key, device_id text not null references devices(device_id), expires_at timestamptz not null)"
-  );
+  const cleanupExpiredTokens = async () => {
+    await pool.query("DELETE FROM pairing_tokens WHERE expires_at <= NOW()");
+    await pool.query("DELETE FROM viewer_tokens WHERE expires_at <= NOW()");
+  };
 
-  const createPairingRequest = async () => {
-    const deviceId = crypto.randomUUID();
-    const deviceToken = createToken();
+  const resolveDevice = async ({ deviceId, deviceToken } = {}) => {
+    if (!deviceId || !deviceToken) {
+      return null;
+    }
+
+    const result = await pool.query(
+      "SELECT device_token FROM devices WHERE device_id = $1",
+      [deviceId]
+    );
+
+    if (result.rowCount === 0 || result.rows[0].device_token !== deviceToken) {
+      return null;
+    }
+
+    return { deviceId, deviceToken };
+  };
+
+  const createPairingRequest = async ({ deviceId, deviceToken } = {}) => {
+    const existingDevice = await resolveDevice({ deviceId, deviceToken });
+    const resolvedDeviceId = existingDevice?.deviceId ?? crypto.randomUUID();
+    const resolvedDeviceToken = existingDevice?.deviceToken ?? createToken();
     const pairingToken = createToken();
     const expiresAtMs = nowMs() + pairingTtlMs;
 
-    await pool.query(
-      "INSERT INTO devices (device_id, device_token, created_at, retention_days) VALUES ($1, $2, NOW(), $3)",
-      [deviceId, deviceToken, 30]
-    );
+    if (!existingDevice) {
+      await pool.query(
+        "INSERT INTO devices (device_id, device_token, created_at, retention_days) VALUES ($1, $2, NOW(), $3)",
+        [resolvedDeviceId, resolvedDeviceToken, 30]
+      );
+    }
 
     await pool.query(
       "INSERT INTO pairing_tokens (token, device_id, expires_at) VALUES ($1, $2, $3)",
-      [pairingToken, deviceId, new Date(expiresAtMs)]
+      [pairingToken, resolvedDeviceId, new Date(expiresAtMs)]
     );
 
     return {
-      deviceId,
-      deviceToken,
+      deviceId: resolvedDeviceId,
+      deviceToken: resolvedDeviceToken,
       pairingToken,
       expiresAtMs,
     };
@@ -200,6 +246,7 @@ const createPostgresStorage = async () => {
   };
 
   return {
+    cleanupExpiredTokens,
     createPairingRequest,
     confirmPairing,
     validateDevice,
