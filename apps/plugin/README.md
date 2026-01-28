@@ -7,25 +7,46 @@ OpenCode desktop plugin for streaming agent state, session summaries, and events
 - RemoteCode relay running (default `http://localhost:8787`)
 
 ## Install
+### Option A: CLI (bunx)
 ```bash
-npm --prefix apps/plugin install
+bun install
+bunx remotecode install
 ```
 
-## Configure
-Create `apps/plugin/.env`:
+Pair a phone (writes device credentials to `.opencode/remotecode.json`):
+```bash
+bunx remotecode auth
 ```
-RELAY_URL=http://localhost:8787
-# Optional: reuse existing device credentials
-DEVICE_ID=
-DEVICE_TOKEN=
+
+This provisions:
+- `.opencode/plugins/remotecode.js` (the OpenCode plugin entrypoint)
+- `.opencode/package.json` (plugin dependencies)
+- `.opencode/remotecode.json` (relay/device config)
+
+### Option B: Manual
+Create the files above yourself (see sections below).
+## Configure
+Create `.opencode/remotecode.json` (or run the CLI to generate it):
+```json
+{
+  "relay_url": "http://localhost:8787",
+  "device_id": "",
+  "device_token": ""
+}
 ```
 
 ## Run
+Restart OpenCode; it auto-loads project plugins from `.opencode/plugins/`.
+
+On first run, the plugin requests a pairing token from the relay and prints a QR code to the terminal/log output. Scan it with the iOS app to complete pairing.
+
+If you ran `bunx remotecode auth`, OpenCode will reuse the persisted `device_id` + `device_token` on startup and connect without re-pairing.
+
+### Dev sidecar (optional)
+For debugging outside OpenCode:
 ```bash
 npm --prefix apps/plugin run dev
 ```
-
-On first run, the plugin requests a pairing token from the relay and prints a QR code to the terminal. Scan it with the iOS app to complete pairing.
 
 ## Hook Wiring
 The plugin exposes a hook adapter so the OpenCode host can feed updates:
