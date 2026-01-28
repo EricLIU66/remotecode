@@ -1,11 +1,67 @@
 import Fastify from "fastify";
 import { WebSocketServer } from "ws";
+import { pathToFileURL } from "node:url";
 import { config } from "./config.js";
 import { createStorage } from "./storage.js";
 import { redactMessage } from "./redaction.js";
 
+export const summarizePayload = (payload) => {
+  if (payload === null || payload === undefined) {
+    return { payloadType: payload === null ? "null" : "undefined" };
+  }
+
+  if (Array.isArray(payload)) {
+    return { payloadType: "array", payloadCount: payload.length };
+  }
+
+  if (typeof payload !== "object") {
+    return { payloadType: typeof payload };
+  }
+
+  const keys = Object.keys(payload);
+  const previewKeys = [
+    "type",
+    "id",
+    "name",
+    "status",
+    "agent_id",
+    "agentId",
+    "session_id",
+    "sessionId",
+    "tool",
+    "tool_name",
+    "toolName",
+    "command",
+    "message",
+    "title",
+  ];
+
+  const preview = Object.fromEntries(
+    previewKeys
+      .filter((key) => payload[key] !== undefined)
+      .slice(0, 6)
+      .map((key) => [key, payload[key]])
+  );
+
+  return {
+    payloadType: "object",
+    payloadKeys: keys.slice(0, 12),
+    payloadKeyCount: keys.length,
+    payloadPreview: Object.keys(preview).length > 0 ? preview : undefined,
+  };
+};
+
 const fastify = Fastify({ logger: true });
 const cleanupIntervalMs = config.tokenCleanupIntervalMs;
+
+const getClientIp = (request) => {
+  const forwardedFor = request?.headers?.["x-forwarded-for"];
+  if (typeof forwardedFor === "string" && forwardedFor.trim()) {
+    return forwardedFor.split(",")[0].trim();
+  }
+
+  return request?.socket?.remoteAddress ?? null;
+};
 
 const parseRequestInfo = (request) => {
   const requestUrl = request.url ?? "/";
@@ -13,7 +69,10 @@ const parseRequestInfo = (request) => {
   return { path: url.pathname, searchParams: url.searchParams };
 };
 
-fastify.get("/health", async () => ({ status: "ok" }));
+fastify.get("/health", async (_request, reply) => {
+  reply.header("access-control-allow-origin", "*");
+  return { status: "ok" };
+});
 
 const start = async () => {
   const storage = await createStorage();
@@ -85,8 +144,26 @@ const start = async () => {
   );
 
   const wsServer = new WebSocketServer({ noServer: true });
+  const viewerConnections = new Map();
 
-  const handleDeviceMessage = async (deviceId, data) => {
+  const lastSnapshotLogAtMs = new Map();
+  const snapshotLogIntervalMs = 5000;
+
+  const broadcastToViewers = (deviceId, message) => {
+    const connections = viewerConnections.get(deviceId);
+    if (!connections || connections.size === 0) {
+      return;
+    }
+
+    const payload = JSON.stringify(message);
+    for (const socket of connections) {
+      if (socket.readyState === 1) {
+        socket.send(payload);
+      }
+    }
+  };
+
+  const handleDeviceMessage = async ({ deviceId, ip, data } = {}) => {
     let message = null;
 
     try {
@@ -112,16 +189,48 @@ const start = async () => {
 
     try {
       if (sanitizedMessage.type === "snapshot.update") {
+        const now = Date.now();
+        const lastLog = lastSnapshotLogAtMs.get(deviceId) ?? 0;
+        if (now - lastLog >= snapshotLogIntervalMs) {
+          lastSnapshotLogAtMs.set(deviceId, now);
+          fastify.log.info(
+            {
+              deviceId,
+              ip,
+              agentCount: Array.isArray(sanitizedMessage.agent_states)
+                ? sanitizedMessage.agent_states.length
+                : 0,
+              hasSessionSummary: sanitizedMessage.session_summary !== null,
+              ts: sanitizedMessage.ts,
+            },
+            "snapshot_received"
+          );
+        }
+
         await storage.saveSnapshot({
           deviceId,
           agentStates: sanitizedMessage.agent_states ?? [],
           sessionSummary: sanitizedMessage.session_summary ?? null,
           ts: sanitizedMessage.ts,
         });
+        broadcastToViewers(deviceId, sanitizedMessage);
         return;
       }
 
       if (sanitizedMessage.type === "event.append") {
+        const payloadSummary = summarizePayload(sanitizedMessage.payload);
+        fastify.log.info(
+          {
+            deviceId,
+            ip,
+            eventType: sanitizedMessage.event_type,
+            severity: sanitizedMessage.severity,
+            ts: sanitizedMessage.ts,
+            ...payloadSummary,
+          },
+          "event_received"
+        );
+
         await storage.appendEvent({
           deviceId,
           eventType: sanitizedMessage.event_type,
@@ -129,6 +238,7 @@ const start = async () => {
           payload: sanitizedMessage.payload,
           ts: sanitizedMessage.ts,
         });
+        broadcastToViewers(deviceId, sanitizedMessage);
       }
     } catch (error) {
       fastify.log.error(
@@ -143,8 +253,10 @@ const start = async () => {
 
     if (path === "/ws/device") {
       const deviceId = searchParams.get("device_id");
+      const ip = getClientIp(request);
+      fastify.log.info({ deviceId, ip }, "device_ws_connected");
       socket.on("message", (data) => {
-        void handleDeviceMessage(deviceId, data);
+        void handleDeviceMessage({ deviceId, ip, data });
       });
       socket.send(JSON.stringify({ type: "device.hello", device_id: deviceId }));
       return;
@@ -162,6 +274,22 @@ const start = async () => {
           device_id: deviceId,
         })
       );
+
+      if (deviceId) {
+        const connections = viewerConnections.get(deviceId) ?? new Set();
+        connections.add(socket);
+        viewerConnections.set(deviceId, connections);
+        socket.on("close", () => {
+          const active = viewerConnections.get(deviceId);
+          if (!active) {
+            return;
+          }
+          active.delete(socket);
+          if (active.size === 0) {
+            viewerConnections.delete(deviceId);
+          }
+        });
+      }
       return;
     }
 
@@ -176,14 +304,26 @@ const start = async () => {
         const deviceId = searchParams.get("device_id");
         const deviceToken = searchParams.get("device_token");
 
+        if (!deviceId) {
+          socket.destroy();
+          return;
+        }
+
         const isValid =
-          deviceId && deviceToken
+          deviceToken && deviceToken.length > 0
             ? await storage.validateDevice(deviceId, deviceToken)
             : false;
 
-        if (!isValid) {
+        if (!isValid && !config.allowUnpairedDeviceWs) {
           socket.destroy();
           return;
+        }
+
+        if (!isValid && config.allowUnpairedDeviceWs) {
+          fastify.log.warn(
+            { deviceId, ip: getClientIp(request) },
+            "device_ws_unpaired_allowed"
+          );
         }
 
         wsServer.handleUpgrade(request, socket, head, (ws) => {
@@ -216,4 +356,12 @@ const start = async () => {
   await fastify.listen({ host: config.host, port: config.port });
 };
 
-start();
+const isMain =
+  typeof process !== "undefined" &&
+  Array.isArray(process.argv) &&
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMain) {
+  start();
+}
