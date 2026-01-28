@@ -12,6 +12,7 @@ RemoteCode is a self-hosted, view-only mobile companion for OpenCode: a desktop 
 ./
 ├── apps/relay/    # Fastify + WS relay + Postgres storage
 ├── apps/plugin/   # OpenCode plugin state stub
+├── apps/frontend/ # Vue 3 status dashboard
 ├── apps/ios/      # SwiftUI app placeholder
 └── docs/plans/    # Architecture/design notes
 ```
@@ -43,9 +44,11 @@ RemoteCode is a self-hosted, view-only mobile companion for OpenCode: a desktop 
 
 ## COMMANDS
 ```bash
+npm run dev
 npm --prefix apps/relay run dev
 npm --prefix apps/relay run migrate
 npm --prefix apps/plugin run dev
+npm --prefix apps/frontend run dev
 ```
 
 ## NOTES
