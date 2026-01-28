@@ -1,0 +1,16 @@
+{
+  "name": "remotecode",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:relay": "node scripts/dev.js --no-web",
+    "dev:frontend": "node scripts/dev.js --no-relay",
+    "test": "npm --prefix apps/plugin run test && npm --prefix apps/relay run test"
+  },
+  "devDependencies": {
+    "remotecode-plugin": "file:apps/plugin"
+  }
+}
