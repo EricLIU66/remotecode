@@ -69,9 +69,56 @@ const parseRequestInfo = (request) => {
   return { path: url.pathname, searchParams: url.searchParams };
 };
 
-fastify.get("/health", async (_request, reply) => {
+const applyCors = (reply) => {
   reply.header("access-control-allow-origin", "*");
+  reply.header("access-control-allow-methods", "GET,POST,OPTIONS");
+  reply.header("access-control-allow-headers", "content-type");
+};
+
+const rejectUpgrade = (socket, statusCode, payload) => {
+  const statusText =
+    statusCode === 400
+      ? "Bad Request"
+      : statusCode === 401
+        ? "Unauthorized"
+        : statusCode === 403
+          ? "Forbidden"
+          : "Error";
+  const body = JSON.stringify(payload ?? { error: "upgrade_rejected" });
+  const length =
+    typeof Buffer !== "undefined" && typeof Buffer.byteLength === "function"
+      ? Buffer.byteLength(body)
+      : body.length;
+
+  try {
+    socket.write(
+      `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
+        "Connection: close\r\n" +
+        "Content-Type: application/json; charset=utf-8\r\n" +
+        `Content-Length: ${length}\r\n` +
+        "\r\n" +
+        body
+    );
+    socket.end();
+  } catch {
+    // Ignore write failures; best-effort response for handshake debugging.
+    socket.destroy();
+  }
+};
+
+fastify.get("/health", async (_request, reply) => {
+  applyCors(reply);
   return { status: "ok" };
+});
+
+fastify.options("/pairing/request", async (_request, reply) => {
+  applyCors(reply);
+  return reply.status(204).send();
+});
+
+fastify.options("/pairing/confirm", async (_request, reply) => {
+  applyCors(reply);
+  return reply.status(204).send();
 });
 
 const start = async () => {
@@ -96,7 +143,8 @@ const start = async () => {
         },
       },
     },
-    async (request) => {
+    async (request, reply) => {
+      applyCors(reply);
       const { device_id: deviceId, device_token: deviceToken } = request.body ?? {};
       const { deviceId: resolvedDeviceId, deviceToken: resolvedDeviceToken, pairingToken, expiresAtMs } =
         await storage.createPairingRequest({ deviceId, deviceToken });
@@ -125,6 +173,7 @@ const start = async () => {
       },
     },
     async (request, reply) => {
+      applyCors(reply);
       const { pairing_token: pairingToken } = request.body ?? {};
 
       if (!pairingToken || typeof pairingToken !== "string") {
@@ -251,6 +300,10 @@ const start = async () => {
   wsServer.on("connection", async (socket, request) => {
     const { path, searchParams } = parseRequestInfo(request);
 
+    socket.on("error", (error) => {
+      fastify.log.warn({ error }, "ws_socket_error");
+    });
+
     if (path === "/ws/device") {
       const deviceId = searchParams.get("device_id");
       const ip = getClientIp(request);
@@ -297,6 +350,9 @@ const start = async () => {
   });
 
   fastify.server.on("upgrade", (request, socket, head) => {
+    socket.on("error", (error) => {
+      fastify.log.warn({ error }, "upgrade_socket_error");
+    });
     void (async () => {
       const { path, searchParams } = parseRequestInfo(request);
 
@@ -305,7 +361,7 @@ const start = async () => {
         const deviceToken = searchParams.get("device_token");
 
         if (!deviceId) {
-          socket.destroy();
+          rejectUpgrade(socket, 400, { error: "device_id_required" });
           return;
         }
 
@@ -315,7 +371,7 @@ const start = async () => {
             : false;
 
         if (!isValid && !config.allowUnpairedDeviceWs) {
-          socket.destroy();
+          rejectUpgrade(socket, 401, { error: "device_token_invalid" });
           return;
         }
 
@@ -334,12 +390,16 @@ const start = async () => {
 
       if (path === "/ws/viewer") {
         const viewerToken = searchParams.get("viewer_token");
+        if (!viewerToken) {
+          rejectUpgrade(socket, 400, { error: "viewer_token_required" });
+          return;
+        }
         const deviceId = viewerToken
           ? await storage.validateViewer(viewerToken)
           : null;
 
         if (!deviceId) {
-          socket.destroy();
+          rejectUpgrade(socket, 401, { error: "viewer_token_invalid" });
           return;
         }
 
