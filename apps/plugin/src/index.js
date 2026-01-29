@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import QRCode from "qrcode";
-import { WebSocket } from "ws";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 const loadEnvFile = (envPath = path.resolve(process.cwd(), ".env")) => {
   if (!fs.existsSync(envPath)) {
@@ -42,16 +42,21 @@ const loadEnvFile = (envPath = path.resolve(process.cwd(), ".env")) => {
   });
 };
 
-loadEnvFile();
-
 const defaultRelayUrl = "http://localhost:8787";
 const defaultSnapshotDebounceMs = 250;
-const defaultReconnectDelayMs = 2000;
+const defaultReconnectDelayMs = 10_000;
 const maxRecentEvents = 200;
 
 export const pluginState = {
   agents: [],
   sessionSummary: null,
+  remotecode: {
+    session: null,
+    status: null,
+    todos: [],
+    todoCounts: null,
+    toast: null,
+  },
   events: [],
 };
 
@@ -122,11 +127,26 @@ const redactObject = (value, key) => {
   return value;
 };
 
+const mergeSessionSummary = () => {
+  const base = pluginState.sessionSummary;
+  const mergedBase =
+    base && typeof base === "object" && !Array.isArray(base)
+      ? base
+      : base === null || base === undefined
+        ? {}
+        : { summary: base };
+
+  return {
+    ...mergedBase,
+    remotecode: pluginState.remotecode,
+  };
+};
+
 const buildSnapshotMessage = (deviceId) => ({
   type: "snapshot.update",
   device_id: deviceId,
   agent_states: redactObject(pluginState.agents),
-  session_summary: redactObject(pluginState.sessionSummary),
+  session_summary: redactObject(mergeSessionSummary()),
   ts: new Date().toISOString(),
 });
 
@@ -144,7 +164,11 @@ const buildDeviceWsUrl = (relayUrl, deviceId, deviceToken) => {
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/ws/device";
   url.searchParams.set("device_id", deviceId);
-  url.searchParams.set("device_token", deviceToken);
+
+  if (deviceToken) {
+    url.searchParams.set("device_token", deviceToken);
+  }
+
   return url.toString();
 };
 
@@ -155,15 +179,22 @@ const buildPairingPayload = ({ relayUrl, deviceId, pairingToken }) =>
     pairing_token: pairingToken,
   });
 
-const renderPairingQr = async ({ relayUrl, deviceId, pairingToken, expiresAt, logger }) => {
-  if (!pairingToken) {
+const renderPairingQr = async ({
+  relayUrl,
+  deviceId,
+  pairingToken,
+  expiresAt,
+  logger,
+  QRCodeImpl,
+}) => {
+  if (!pairingToken || !QRCodeImpl) {
     return;
   }
 
   const payload = buildPairingPayload({ relayUrl, deviceId, pairingToken });
 
   try {
-    const qr = await QRCode.toString(payload, {
+    const qr = await QRCodeImpl.toString(payload, {
       type: "terminal",
       errorCorrectionLevel: "M",
     });
@@ -214,22 +245,132 @@ export const createRelayClient = ({
   deviceToken,
   logger,
   reconnectDelayMs = defaultReconnectDelayMs,
+  maxReconnectDelayMs = 10_000,
+  reconnectBackoffFactor = 1,
+  reconnectJitterRatio = 0,
+  logThrottleMs = 30_000,
   onOpen,
+  onAuthError,
+  WebSocketImpl,
+  now = () => Date.now(),
+  random = () => Math.random(),
+  setTimeoutImpl = setTimeout,
+  clearTimeoutImpl = clearTimeout,
 } = {}) => {
   let socket = null;
   let reconnectTimer = null;
   let isConnecting = false;
   let shouldReconnect = true;
+  let reconnectAttempt = 0;
+  let hasEverConnected = false;
+  let lastConnectionLogAt = 0;
+  let lastWsUrl = null;
 
-  const scheduleReconnect = () => {
+  const emitLog = (level, message, details) => {
+    const target =
+      logger?.[level] ??
+      (level === "warn" ? logger?.info : null) ??
+      (level === "debug" ? logger?.info : null) ??
+      logger?.log;
+
+    target?.(message, details);
+  };
+
+  const serializeError = (error) => {
+    if (!error) {
+      return null;
+    }
+
+    if (typeof error === "string") {
+      return { message: error };
+    }
+
+    const maybeError = error?.error ?? error;
+    const message = maybeError?.message ?? maybeError?.toString?.();
+    const code = maybeError?.code;
+    const name = maybeError?.name;
+    return { message, code, name };
+  };
+
+  const extractStatusCode = (error) => {
+    const message = error?.message ?? error?.toString?.() ?? "";
+    const match = String(message).match(/\b(\d{3})\b/);
+    if (!match) {
+      return null;
+    }
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? value : null;
+  };
+
+  const normalizeCloseInfo = (codeOrEvent, reason) => {
+    if (typeof codeOrEvent === "number") {
+      const reasonText =
+        typeof reason === "string"
+          ? reason
+          : typeof Buffer !== "undefined" && Buffer.isBuffer?.(reason)
+            ? reason.toString()
+            : reason?.toString?.();
+      return { code: codeOrEvent, reason: reasonText };
+    }
+
+    if (codeOrEvent && typeof codeOrEvent === "object") {
+      return {
+        code: codeOrEvent.code,
+        reason: codeOrEvent.reason,
+        wasClean: codeOrEvent.wasClean,
+      };
+    }
+
+    return {};
+  };
+
+  const maybeLogConnectionIssue = ({ event, details, forceLevel } = {}) => {
+    if (!logger) {
+      return;
+    }
+
+    const ts = now();
+    if (logThrottleMs > 0 && ts - lastConnectionLogAt < logThrottleMs) {
+      return;
+    }
+
+    lastConnectionLogAt = ts;
+    const level = forceLevel ?? (hasEverConnected ? "warn" : "debug");
+    emitLog(level, event, details);
+  };
+
+  const computeReconnectDelayMs = (attempt) => {
+    const base = reconnectDelayMs * Math.pow(reconnectBackoffFactor, Math.max(0, attempt - 1));
+    const capped = Math.min(maxReconnectDelayMs, base);
+    const jitter = capped * reconnectJitterRatio;
+    const min = Math.max(0, capped - jitter);
+    const max = capped + jitter;
+    return Math.round(min + (max - min) * random());
+  };
+
+  const scheduleReconnect = (meta = {}) => {
     if (reconnectTimer || !shouldReconnect) {
       return;
     }
 
-    reconnectTimer = setTimeout(() => {
+    const attempt = reconnectAttempt + 1;
+    reconnectAttempt = attempt;
+    const delayMs = computeReconnectDelayMs(attempt);
+
+    maybeLogConnectionIssue({
+      event: "relay:disconnected",
+      details: {
+        attempt,
+        delay_ms: delayMs,
+        close: meta.close,
+        error: meta.error,
+      },
+    });
+
+    reconnectTimer = setTimeoutImpl(() => {
       reconnectTimer = null;
       connect();
-    }, reconnectDelayMs);
+    }, delayMs);
   };
 
   const clearConnection = (connection) => {
@@ -240,7 +381,9 @@ export const createRelayClient = ({
   };
 
   const sendMessage = (message) => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    const WebSocketRuntime = WebSocketImpl ?? globalThis.WebSocket;
+
+    if (!socket || !WebSocketRuntime || socket.readyState !== WebSocketRuntime.OPEN) {
       return false;
     }
 
@@ -253,42 +396,113 @@ export const createRelayClient = ({
       return;
     }
 
+    const WebSocketRuntime = WebSocketImpl ?? globalThis.WebSocket;
+
+    if (!WebSocketRuntime) {
+      throw new Error("WebSocket runtime not available");
+    }
+
     isConnecting = true;
     const wsUrl = buildDeviceWsUrl(relayUrl, deviceId, deviceToken);
-    const connection = new WebSocket(wsUrl);
+    lastWsUrl = wsUrl;
+    const connection = new WebSocketRuntime(wsUrl);
     socket = connection;
 
-    connection.on("open", () => {
+    const addListener = (event, handler) => {
+      if (typeof connection.on === "function") {
+        connection.on(event, handler);
+        return;
+      }
+
+      if (typeof connection.addEventListener === "function") {
+        connection.addEventListener(event, handler);
+        return;
+      }
+
+      const handlerKey = `on${event}`;
+      if (handlerKey in connection) {
+        connection[handlerKey] = handler;
+        return;
+      }
+
+      throw new Error("WebSocket runtime does not support event listeners");
+    };
+
+    const normalizeMessageData = (data) => {
+      const payload = data?.data ?? data;
+      if (typeof payload === "string") {
+        return payload;
+      }
+
+      if (typeof Buffer !== "undefined") {
+        if (Buffer.isBuffer?.(payload)) {
+          return payload.toString();
+        }
+
+        if (payload instanceof ArrayBuffer) {
+          return Buffer.from(payload).toString();
+        }
+
+        if (ArrayBuffer.isView(payload)) {
+          return Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength).toString();
+        }
+      }
+
+      return payload?.toString?.() ?? "";
+    };
+
+    addListener("open", () => {
       isConnecting = false;
+      reconnectAttempt = 0;
+      hasEverConnected = true;
+      lastConnectionLogAt = 0;
+      emitLog("info", "relay:connected", { device_id: deviceId });
       onOpen?.();
     });
 
-    connection.on("message", (data) => {
+    addListener("message", (data) => {
       try {
-        const message = JSON.parse(data.toString());
+        const messageText = normalizeMessageData(data);
+        const message = JSON.parse(messageText);
         logger?.debug?.("relay:message", message);
       } catch (error) {
         logger?.warn?.("relay:message_parse_failed", error);
       }
     });
 
-    connection.on("close", () => {
+    addListener("close", (codeOrEvent, reason) => {
+      const close = normalizeCloseInfo(codeOrEvent, reason);
       clearConnection(connection);
-      scheduleReconnect();
+      scheduleReconnect({ close });
     });
 
-    connection.on("error", (error) => {
-      logger?.error?.("relay:connection_error", error);
+    addListener("error", (error) => {
+      const statusCode = extractStatusCode(error);
+      if (statusCode === 401 || statusCode === 403) {
+        shouldReconnect = false;
+        clearConnection(connection);
+        void onAuthError?.({
+          statusCode,
+          wsUrl: lastWsUrl,
+          error: serializeError(error),
+        });
+        return;
+      }
+
+      maybeLogConnectionIssue({
+        event: "relay:connection_error",
+        details: { attempt: reconnectAttempt + 1, error: serializeError(error) },
+        forceLevel: hasEverConnected ? "warn" : "debug",
+      });
       clearConnection(connection);
-      connection.close();
-      scheduleReconnect();
+      scheduleReconnect({ error: serializeError(error) });
     });
   };
 
   const close = () => {
     shouldReconnect = false;
     if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
+      clearTimeoutImpl(reconnectTimer);
       reconnectTimer = null;
     }
 
@@ -308,15 +522,119 @@ export const createPlugin = ({
   relayUrl = process.env.RELAY_URL ?? defaultRelayUrl,
   deviceId = process.env.DEVICE_ID ?? null,
   deviceToken = process.env.DEVICE_TOKEN ?? null,
+  allowUnpaired =
+    process.env.REMOTECODE_UNPAIRED === "1" ||
+    process.env.REMOTECODE_UNPAIRED === "true" ||
+    process.env.ALLOW_UNPAIRED_DEVICE_WS === "1" ||
+    process.env.ALLOW_UNPAIRED_DEVICE_WS === "true",
   snapshotDebounceMs = defaultSnapshotDebounceMs,
   logger = console,
   hooks = null,
+  dependencies = {},
 } = {}) => {
   let relayClient = null;
   let snapshotTimer = null;
   let currentDeviceId = deviceId;
   let currentDeviceToken = deviceToken;
   let detachHooks = null;
+  let authRepairPromise = null;
+
+  const tryPersistDeviceCredentials = ({ nextDeviceId, nextDeviceToken } = {}) => {
+    const configPath =
+      process.env.REMOTECODE_CONFIG_PATH ??
+      path.resolve(process.cwd(), ".opencode", "remotecode.json");
+
+    if (!nextDeviceId || !nextDeviceToken) {
+      return;
+    }
+
+    if (!fs.existsSync(configPath)) {
+      return;
+    }
+
+    try {
+      const raw = fs.readFileSync(configPath, "utf8");
+      const existing = JSON.parse(raw);
+      if (!existing || typeof existing !== "object") {
+        return;
+      }
+
+      const nextConfig = {
+        ...existing,
+        relay_url: existing.relay_url ?? relayUrl,
+        device_id: nextDeviceId,
+        device_token: nextDeviceToken,
+      };
+
+      fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+      logger.info?.("remotecode_config_updated", { path: configPath });
+    } catch (error) {
+      logger.warn?.("remotecode_config_update_failed", {
+        path: configPath,
+        error: error?.message ?? error,
+      });
+    }
+  };
+
+  const repairAuth = ({ statusCode, wsUrl, error } = {}) => {
+    if (authRepairPromise) {
+      return authRepairPromise;
+    }
+
+    authRepairPromise = (async () => {
+      logger.warn?.("relay:auth_failed_repairing", {
+        status_code: statusCode,
+        ws_url: wsUrl,
+        error,
+      });
+
+      relayClient?.close();
+      relayClient = null;
+
+      const pairing = await requestPairing({
+        relayUrl,
+        deviceId: currentDeviceId,
+        deviceToken: currentDeviceToken,
+      });
+
+      currentDeviceId = pairing.deviceId;
+      currentDeviceToken = pairing.deviceToken;
+      tryPersistDeviceCredentials({
+        nextDeviceId: currentDeviceId,
+        nextDeviceToken: currentDeviceToken,
+      });
+
+      if (pairing.pairingToken) {
+        logger.info?.("pairing_token_received", { expires_at: pairing.expiresAt });
+        await renderPairingQr({
+          relayUrl,
+          deviceId: pairing.deviceId,
+          pairingToken: pairing.pairingToken,
+          expiresAt: pairing.expiresAt,
+          logger,
+          QRCodeImpl: dependencies.QRCode,
+        });
+      }
+
+      relayClient = createRelayClient({
+        relayUrl,
+        deviceId: currentDeviceId,
+        deviceToken: currentDeviceToken,
+        logger,
+        onOpen: sendSnapshot,
+        WebSocketImpl: dependencies.WebSocket,
+        onAuthError: (meta) => {
+          void repairAuth(meta);
+        },
+      });
+
+      relayClient.connect();
+    })().finally(() => {
+      authRepairPromise = null;
+    });
+
+    return authRepairPromise;
+  };
 
   const sendSnapshot = () => {
     if (!relayClient || !currentDeviceId) {
@@ -343,24 +661,33 @@ export const createPlugin = ({
     }
 
     if (!currentDeviceId || !currentDeviceToken) {
-      const pairing = await requestPairing({
-        relayUrl,
-        deviceId: currentDeviceId,
-        deviceToken: currentDeviceToken,
-      });
+      if (allowUnpaired) {
+        if (!currentDeviceId) {
+          currentDeviceId = crypto.randomUUID();
+        }
 
-      currentDeviceId = pairing.deviceId;
-      currentDeviceToken = pairing.deviceToken;
-
-      if (pairing.pairingToken) {
-        logger.info?.("pairing_token_received", { expires_at: pairing.expiresAt });
-        await renderPairingQr({
+        currentDeviceToken = currentDeviceToken || null;
+      } else {
+        const pairing = await requestPairing({
           relayUrl,
-          deviceId: pairing.deviceId,
-          pairingToken: pairing.pairingToken,
-          expiresAt: pairing.expiresAt,
-          logger,
+          deviceId: currentDeviceId,
+          deviceToken: currentDeviceToken,
         });
+
+        currentDeviceId = pairing.deviceId;
+        currentDeviceToken = pairing.deviceToken;
+
+        if (pairing.pairingToken) {
+          logger.info?.("pairing_token_received", { expires_at: pairing.expiresAt });
+          await renderPairingQr({
+            relayUrl,
+            deviceId: pairing.deviceId,
+            pairingToken: pairing.pairingToken,
+            expiresAt: pairing.expiresAt,
+            logger,
+            QRCodeImpl: dependencies.QRCode,
+          });
+        }
       }
     }
 
@@ -370,6 +697,10 @@ export const createPlugin = ({
       deviceToken: currentDeviceToken,
       logger,
       onOpen: sendSnapshot,
+      WebSocketImpl: dependencies.WebSocket,
+      onAuthError: (meta) => {
+        void repairAuth(meta);
+      },
     });
 
     relayClient.connect();
@@ -382,6 +713,92 @@ export const createPlugin = ({
 
   const updateSessionSummary = (summary) => {
     pluginState.sessionSummary = redactObject(summary);
+    scheduleSnapshot();
+  };
+
+  const computeTodoCounts = (todos) => {
+    const counts = {
+      pending: 0,
+      in_progress: 0,
+      completed: 0,
+      cancelled: 0,
+      total: 0,
+    };
+
+    if (!Array.isArray(todos)) {
+      return counts;
+    }
+
+    counts.total = todos.length;
+    todos.forEach((todo) => {
+      const status = typeof todo?.status === "string" ? todo.status : "pending";
+      if (status in counts) {
+        counts[status] += 1;
+      }
+    });
+
+    return counts;
+  };
+
+  const updateTodos = ({ sessionId, todos } = {}) => {
+    if (!Array.isArray(todos)) {
+      return;
+    }
+
+    pluginState.remotecode.todos = redactObject(todos);
+    pluginState.remotecode.todoCounts = computeTodoCounts(todos);
+
+    if (sessionId) {
+      pluginState.remotecode.session = {
+        ...(pluginState.remotecode.session ?? null),
+        id: sessionId,
+      };
+    }
+
+    scheduleSnapshot();
+  };
+
+  const updateSessionInfo = (info) => {
+    if (!info || typeof info !== "object") {
+      return;
+    }
+
+    pluginState.remotecode.session = redactObject({
+      id: info.id ?? pluginState.remotecode.session?.id,
+      title: info.title ?? pluginState.remotecode.session?.title,
+      time: info.time ?? pluginState.remotecode.session?.time,
+      projectID: info.projectID ?? pluginState.remotecode.session?.projectID,
+    });
+    scheduleSnapshot();
+  };
+
+  const updateSessionStatus = ({ sessionId, status } = {}) => {
+    if (!status || typeof status !== "object") {
+      return;
+    }
+
+    pluginState.remotecode.status = redactObject(status);
+    if (sessionId) {
+      pluginState.remotecode.session = {
+        ...(pluginState.remotecode.session ?? null),
+        id: sessionId,
+      };
+    }
+    scheduleSnapshot();
+  };
+
+  const updateToast = (toast) => {
+    if (!toast || typeof toast !== "object") {
+      return;
+    }
+
+    pluginState.remotecode.toast = redactObject({
+      title: toast.title,
+      message: toast.message,
+      variant: toast.variant,
+      duration: toast.duration,
+      ts: new Date().toISOString(),
+    });
     scheduleSnapshot();
   };
 
@@ -541,6 +958,10 @@ export const createPlugin = ({
     connect,
     updateAgents,
     updateSessionSummary,
+    updateTodos,
+    updateSessionInfo,
+    updateSessionStatus,
+    updateToast,
     appendEvent,
     handleHook,
     attachHooks,
@@ -549,15 +970,30 @@ export const createPlugin = ({
 };
 
 const isDirectRun = () => {
-  if (!process.argv[1]) {
+  if (typeof process === "undefined" || !process.argv?.[1]) {
     return false;
   }
 
-  return import.meta.url === new URL(`file://${process.argv[1]}`).href;
+  const scriptHref = new URL(`file://${process.argv[1]}`).href;
+  return import.meta.url === scriptHref;
 };
 
 if (isDirectRun()) {
-  const plugin = createPlugin();
+  const scriptPath = fileURLToPath(import.meta.url);
+  const scriptDir = path.dirname(scriptPath);
+
+  loadEnvFile(path.resolve(scriptDir, "..", ".env"));
+
+  const { WebSocket } = await import("ws");
+  const QRCode = (await import("qrcode")).default;
+
+  const plugin = createPlugin({
+    dependencies: {
+      WebSocket,
+      QRCode,
+    },
+  });
+
   plugin.connect().catch((error) => {
     console.error("plugin_start_failed", error);
     process.exitCode = 1;

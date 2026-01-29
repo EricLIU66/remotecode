@@ -29,7 +29,12 @@ RemoteCode is a self-hosted mobile companion for OpenCode. It gives you a live, 
 ## What’s included (v1) 🧩
 - OpenCode plugin (desktop) for events + snapshots
 - Cloud relay (Node.js + Fastify + WebSocket + Postgres)
+- Vue frontend (status dashboard for relay)
 - SwiftUI iOS app (view-only dashboard)
+
+## Dev
+Run relay + frontend together:
+`npm run dev`
 
 ## Quickstart (coming soon) 🚀
 - Self-host relay via docker-compose

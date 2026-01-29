@@ -1,0 +1,598 @@
+:root {
+  --ink: #1e2329;
+  --muted: #5a6775;
+  --paper: #fbfaf7;
+  --card: rgba(255, 255, 255, 0.7);
+  --stroke: rgba(24, 33, 44, 0.12);
+  --shadow: rgba(10, 14, 18, 0.10);
+  --online: #0f766e;
+  --offline: #b42318;
+  --warn: #a16207;
+  --idle: #334155;
+  --console-bg: #0b0f14;
+  --console-ink: #e9edf2;
+  --console-muted: rgba(233, 237, 242, 0.6);
+  --console-border: rgba(233, 237, 242, 0.14);
+
+  font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  line-height: 1.35;
+  font-weight: 500;
+  color: var(--ink);
+  background: radial-gradient(1200px 700px at 20% 10%, #fff 0%, transparent 55%),
+    radial-gradient(900px 600px at 90% 20%, #f2f6ff 0%, transparent 50%),
+    linear-gradient(180deg, #fbfaf7 0%, #f7f3ee 40%, #f4efe8 100%);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.page {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 28px 18px 64px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #1f2a37 0%, #516173 52%, #9aa7b6 100%);
+  box-shadow: 0 10px 18px var(--shadow);
+  position: relative;
+  overflow: hidden;
+}
+
+.mark::after {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.brand-title {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(30, 35, 41, 0.7);
+}
+
+.brand-subtitle {
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+
+.card {
+  border: 1px solid var(--stroke);
+  background: var(--card);
+  backdrop-filter: blur(10px);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: 0 24px 60px var(--shadow);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--stroke);
+}
+
+.row-secondary {
+  padding-top: 14px;
+}
+
+.label {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(30, 35, 41, 0.65);
+}
+
+.input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(24, 33, 44, 0.18);
+  background: rgba(255, 255, 255, 0.65);
+  padding: 11px 12px;
+  font-size: 15px;
+  outline: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+}
+
+.input:focus {
+  border-color: rgba(15, 118, 110, 0.55);
+  box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.15);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px 0;
+}
+
+.metric {
+  border-radius: 14px;
+  border: 1px solid rgba(24, 33, 44, 0.10);
+  background: rgba(255, 255, 255, 0.55);
+  padding: 14px 14px 12px;
+}
+
+.metric-label {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  color: rgba(30, 35, 41, 0.62);
+}
+
+.metric-value {
+  margin-top: 6px;
+  font-size: 18px;
+  letter-spacing: -0.01em;
+}
+
+.footer {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 14px;
+  align-items: start;
+  padding-top: 12px;
+  border-top: 1px solid var(--stroke);
+}
+
+.button {
+  border-radius: 14px;
+  border: 1px solid rgba(24, 33, 44, 0.16);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.6));
+  padding: 11px 12px;
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.console {
+  margin-top: 18px;
+  background: radial-gradient(1200px 600px at 10% 0%, rgba(39, 54, 72, 0.35), transparent 60%),
+    linear-gradient(180deg, rgba(11, 15, 20, 0.95), rgba(12, 16, 22, 0.98));
+  border-color: rgba(127, 137, 150, 0.25);
+  color: var(--console-ink);
+}
+
+.progress {
+  margin-top: 18px;
+  background: radial-gradient(900px 520px at 15% 0%, rgba(39, 54, 72, 0.28), transparent 60%),
+    linear-gradient(180deg, rgba(11, 15, 20, 0.92), rgba(12, 16, 22, 0.98));
+  border-color: rgba(127, 137, 150, 0.22);
+  color: var(--console-ink);
+}
+
+.progress-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.progress-title {
+  margin-top: 6px;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.progress-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.progress-chip {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  border: 1px solid rgba(233, 237, 242, 0.14);
+  background: rgba(3, 6, 10, 0.55);
+  color: rgba(233, 237, 242, 0.92);
+}
+
+.progress-chip-muted {
+  border-color: rgba(233, 237, 242, 0.10);
+  color: rgba(233, 237, 242, 0.80);
+}
+
+.progress-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 0.85fr;
+  gap: 14px;
+  padding-top: 14px;
+}
+
+.progress-panel {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(3, 6, 10, 0.55);
+  padding: 12px;
+}
+
+.progress-panel-title {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(233, 237, 242, 0.70);
+}
+
+.progress-empty {
+  margin-top: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  color: rgba(233, 237, 242, 0.62);
+}
+
+.todo-list {
+  margin-top: 10px;
+}
+
+.todo-item {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.todo-item:last-child {
+  border-bottom: none;
+}
+
+.todo-status {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(233, 237, 242, 0.72);
+}
+
+.todo-content {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 13px;
+  color: rgba(233, 237, 242, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.todo-completed .todo-status {
+  color: rgba(15, 118, 110, 0.95);
+}
+
+.todo-in_progress .todo-status {
+  color: rgba(161, 98, 7, 0.95);
+}
+
+.todo-cancelled .todo-status {
+  color: rgba(180, 35, 24, 0.95);
+}
+
+.toast {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.toast-title {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(233, 237, 242, 0.72);
+}
+
+.toast-message {
+  margin-top: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 13px;
+  color: rgba(233, 237, 242, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.toast-meta {
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(233, 237, 242, 0.55);
+}
+
+.toast-compact {
+  margin-top: 12px;
+}
+
+.toast-success {
+  border-left: 3px solid rgba(15, 118, 110, 0.95);
+}
+
+.toast-warning {
+  border-left: 3px solid rgba(161, 98, 7, 0.95);
+}
+
+.toast-error {
+  border-left: 3px solid rgba(180, 35, 24, 0.95);
+}
+
+.toast-info {
+  border-left: 3px solid rgba(88, 116, 152, 0.95);
+}
+
+.console-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.console-subtitle {
+  font-size: 14px;
+  color: var(--console-muted);
+}
+
+.console-chip {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  border: 1px solid var(--console-border);
+}
+
+.console-body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  margin-top: 14px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 12px;
+  background: rgba(3, 6, 10, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.console-line {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+}
+
+.console-line-interactive {
+  cursor: pointer;
+}
+
+.console-line-interactive:focus {
+  outline: none;
+}
+
+.console-line-interactive:focus-visible {
+  box-shadow: 0 0 0 2px rgba(233, 237, 242, 0.22);
+  border-radius: 8px;
+}
+
+.console-raw {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: rgba(233, 237, 242, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.console-line:last-child {
+  border-bottom: none;
+}
+
+.console-time {
+  color: var(--console-muted);
+}
+
+.console-text {
+  color: var(--console-ink);
+}
+
+.console-empty {
+  color: var(--console-muted);
+  padding: 8px 0;
+}
+
+.console-footer {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--console-muted);
+  font-size: 13px;
+}
+
+.console-hint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+}
+
+.hint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  color: rgba(30, 35, 41, 0.62);
+}
+
+.setup-note {
+  margin-bottom: 14px;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px dashed rgba(24, 33, 44, 0.18);
+  background: rgba(255, 255, 255, 0.45);
+  color: rgba(30, 35, 41, 0.78);
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.setup-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 33, 44, 0.12);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.hint-line {
+  line-height: 1.45;
+}
+
+.hint-error {
+  color: rgba(180, 35, 24, 0.85);
+}
+
+.pulse {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(51, 65, 85, 0.0);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.tone-online {
+  color: var(--online);
+  background: var(--online);
+  box-shadow: 0 0 0 6px rgba(15, 118, 110, 0.12);
+}
+
+.tone-offline {
+  color: var(--offline);
+  background: var(--offline);
+  box-shadow: 0 0 0 6px rgba(180, 35, 24, 0.10);
+}
+
+.tone-warn {
+  color: var(--warn);
+  background: var(--warn);
+  box-shadow: 0 0 0 6px rgba(161, 98, 7, 0.12);
+}
+
+.tone-idle {
+  color: var(--idle);
+  background: var(--idle);
+  box-shadow: 0 0 0 6px rgba(51, 65, 85, 0.10);
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  60% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+}
+
+@media (max-width: 720px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .row {
+    grid-template-columns: 1fr;
+  }
+
+  .footer {
+    grid-template-columns: 1fr;
+  }
+
+  .console-line {
+    grid-template-columns: 1fr;
+  }
+
+  .progress-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .progress-chips {
+    justify-content: flex-start;
+  }
+
+  .progress-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .todo-item {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
