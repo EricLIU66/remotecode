@@ -317,7 +317,16 @@ const shouldForwardEvent = (type) => {
     return false;
   }
 
-  return type.startsWith("session.") || type.startsWith("message.") || type.startsWith("tool.");
+  if (type === "tui.toast.show") {
+    return true;
+  }
+
+  return (
+    type.startsWith("session.") ||
+    type.startsWith("message.") ||
+    type.startsWith("tool.") ||
+    type.startsWith("todo.")
+  );
 };
 
 const truncateText = (value, maxLen = 2000) => {
@@ -390,6 +399,28 @@ export const RemoteCode = async ({ client, directory }) => {
             last_event_type: type,
             ...(event?.properties ?? null),
           });
+        }
+
+        if (type === "session.created" || type === "session.updated") {
+          core.updateSessionInfo(event?.properties?.info);
+        }
+
+        if (type === "session.status") {
+          core.updateSessionStatus({
+            sessionId: event?.properties?.sessionID,
+            status: event?.properties?.status,
+          });
+        }
+
+        if (type === "todo.updated") {
+          core.updateTodos({
+            sessionId: event?.properties?.sessionID,
+            todos: event?.properties?.todos,
+          });
+        }
+
+        if (type === "tui.toast.show") {
+          core.updateToast(event?.properties);
         }
       }
 

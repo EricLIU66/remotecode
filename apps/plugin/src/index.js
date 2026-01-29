@@ -50,6 +50,13 @@ const maxRecentEvents = 200;
 export const pluginState = {
   agents: [],
   sessionSummary: null,
+  remotecode: {
+    session: null,
+    status: null,
+    todos: [],
+    todoCounts: null,
+    toast: null,
+  },
   events: [],
 };
 
@@ -120,11 +127,26 @@ const redactObject = (value, key) => {
   return value;
 };
 
+const mergeSessionSummary = () => {
+  const base = pluginState.sessionSummary;
+  const mergedBase =
+    base && typeof base === "object" && !Array.isArray(base)
+      ? base
+      : base === null || base === undefined
+        ? {}
+        : { summary: base };
+
+  return {
+    ...mergedBase,
+    remotecode: pluginState.remotecode,
+  };
+};
+
 const buildSnapshotMessage = (deviceId) => ({
   type: "snapshot.update",
   device_id: deviceId,
   agent_states: redactObject(pluginState.agents),
-  session_summary: redactObject(pluginState.sessionSummary),
+  session_summary: redactObject(mergeSessionSummary()),
   ts: new Date().toISOString(),
 });
 
@@ -694,6 +716,92 @@ export const createPlugin = ({
     scheduleSnapshot();
   };
 
+  const computeTodoCounts = (todos) => {
+    const counts = {
+      pending: 0,
+      in_progress: 0,
+      completed: 0,
+      cancelled: 0,
+      total: 0,
+    };
+
+    if (!Array.isArray(todos)) {
+      return counts;
+    }
+
+    counts.total = todos.length;
+    todos.forEach((todo) => {
+      const status = typeof todo?.status === "string" ? todo.status : "pending";
+      if (status in counts) {
+        counts[status] += 1;
+      }
+    });
+
+    return counts;
+  };
+
+  const updateTodos = ({ sessionId, todos } = {}) => {
+    if (!Array.isArray(todos)) {
+      return;
+    }
+
+    pluginState.remotecode.todos = redactObject(todos);
+    pluginState.remotecode.todoCounts = computeTodoCounts(todos);
+
+    if (sessionId) {
+      pluginState.remotecode.session = {
+        ...(pluginState.remotecode.session ?? null),
+        id: sessionId,
+      };
+    }
+
+    scheduleSnapshot();
+  };
+
+  const updateSessionInfo = (info) => {
+    if (!info || typeof info !== "object") {
+      return;
+    }
+
+    pluginState.remotecode.session = redactObject({
+      id: info.id ?? pluginState.remotecode.session?.id,
+      title: info.title ?? pluginState.remotecode.session?.title,
+      time: info.time ?? pluginState.remotecode.session?.time,
+      projectID: info.projectID ?? pluginState.remotecode.session?.projectID,
+    });
+    scheduleSnapshot();
+  };
+
+  const updateSessionStatus = ({ sessionId, status } = {}) => {
+    if (!status || typeof status !== "object") {
+      return;
+    }
+
+    pluginState.remotecode.status = redactObject(status);
+    if (sessionId) {
+      pluginState.remotecode.session = {
+        ...(pluginState.remotecode.session ?? null),
+        id: sessionId,
+      };
+    }
+    scheduleSnapshot();
+  };
+
+  const updateToast = (toast) => {
+    if (!toast || typeof toast !== "object") {
+      return;
+    }
+
+    pluginState.remotecode.toast = redactObject({
+      title: toast.title,
+      message: toast.message,
+      variant: toast.variant,
+      duration: toast.duration,
+      ts: new Date().toISOString(),
+    });
+    scheduleSnapshot();
+  };
+
   const appendEvent = ({ eventType, severity = "info", payload } = {}) => {
     if (!eventType) {
       return;
@@ -850,6 +958,10 @@ export const createPlugin = ({
     connect,
     updateAgents,
     updateSessionSummary,
+    updateTodos,
+    updateSessionInfo,
+    updateSessionStatus,
+    updateToast,
     appendEvent,
     handleHook,
     attachHooks,
