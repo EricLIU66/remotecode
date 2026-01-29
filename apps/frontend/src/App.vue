@@ -16,18 +16,23 @@ const loadViewerToken = () => {
   return stored && stored.trim() ? stored : ''
 }
 const viewerToken = ref(loadViewerToken())
+const isExchanging = ref(false)
+const exchangeError = ref(null)
 const isChecking = ref(false)
 const status = ref('unknown')
 const lastOkAt = ref(null)
 const latencyMs = ref(null)
 const lastError = ref(null)
+const isPolling = ref(true)
 const wsStatus = ref('idle')
 const wsError = ref(null)
+const showExchangeError = computed(() => Boolean(exchangeError.value) && wsStatus.value !== 'online')
 const lastMessageAt = ref(null)
 const deviceId = ref(null)
 const logEntries = ref([])
 const latestSnapshot = ref(null)
 const latestEvent = ref(null)
+const expandedEntryKey = ref(null)
 
 const relayHealthUrl = computed(() => {
   try {
@@ -53,6 +58,73 @@ const relayWsUrl = computed(() => {
   }
 })
 
+const parsePairingInput = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return { pairingToken: null, relayUrlOverride: null }
+
+  if (raw.startsWith('{') && raw.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(raw)
+      const pairingToken = parsed?.pairing_token || parsed?.pairingToken || null
+      const relayUrlOverride = parsed?.relay_url || parsed?.relayUrl || null
+      return { pairingToken, relayUrlOverride }
+    } catch {
+      return { pairingToken: raw, relayUrlOverride: null }
+    }
+  }
+
+  return { pairingToken: raw, relayUrlOverride: null }
+}
+
+const confirmPairing = async ({ pairingToken, relayUrlValue }) => {
+  const url = new URL('/pairing/confirm', relayUrlValue)
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pairing_token: pairingToken }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    const error = new Error(`Pairing confirm failed (${response.status}): ${body}`)
+    error.status = response.status
+    throw error
+  }
+
+  const data = await response.json()
+  return { viewerToken: data.viewer_token, deviceId: data.device_id }
+}
+
+const maybeExchangePairingToken = async (value) => {
+  exchangeError.value = null
+  const raw = String(value || '').trim()
+  if (!raw) return false
+
+  const { pairingToken, relayUrlOverride } = parsePairingInput(raw)
+  if (!pairingToken) return false
+
+  if (relayUrlOverride && relayUrlOverride !== relayUrl.value) {
+    relayUrl.value = relayUrlOverride
+  }
+
+  isExchanging.value = true
+  try {
+    const result = await confirmPairing({ pairingToken, relayUrlValue: relayUrl.value })
+    if (result?.viewerToken && result.viewerToken !== viewerToken.value) {
+      deviceId.value = result.deviceId ?? deviceId.value
+      viewerToken.value = result.viewerToken
+      return true
+    }
+  } catch (error) {
+    // If this wasn't a valid pairing token, just treat the input as a viewer token.
+    exchangeError.value = error?.message || 'Pairing confirm failed'
+  } finally {
+    isExchanging.value = false
+  }
+
+  return false
+}
+
 const statusLabel = computed(() => {
   if (status.value === 'online') return 'Online'
   if (status.value === 'offline') return 'Offline'
@@ -69,6 +141,7 @@ const statusTone = computed(() => {
 
 const wsStatusLabel = computed(() => {
   if (!viewerToken.value) return 'Viewer token missing'
+  if (isExchanging.value) return 'Exchanging token'
   if (wsStatus.value === 'online') return 'Live'
   if (wsStatus.value === 'connecting') return 'Connecting'
   if (wsStatus.value === 'error') return 'Error'
@@ -98,6 +171,55 @@ const formatInline = (value) => {
   }
 }
 
+const formatJson = (value) => {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'string') return value
+  try {
+    const rendered = JSON.stringify(value, null, 2)
+    if (!rendered) return '—'
+    const maxLen = 12_000
+    if (rendered.length <= maxLen) return rendered
+    return `${rendered.slice(0, maxLen)}\n… (truncated)`
+  } catch {
+    return String(value)
+  }
+}
+
+const extractPreviewText = (value) => {
+  if (!value) return null
+  if (typeof value === 'string') return value
+  if (typeof value !== 'object') return String(value)
+
+  const candidates = [
+    value.text,
+    value.message,
+    value.content,
+    value.output,
+    value.title,
+    value.error?.message,
+  ]
+    .map((candidate) => {
+      if (typeof candidate === 'string') return candidate
+      if (Array.isArray(candidate)) {
+        const joined = candidate.filter((part) => typeof part === 'string').join('')
+        return joined || null
+      }
+      return null
+    })
+    .filter(Boolean)
+
+  return candidates[0] ?? null
+}
+
+const summarizeEventPayload = (payload) => {
+  const text = extractPreviewText(payload)
+  if (!text) return null
+  const normalized = String(text).replace(/\s+/g, ' ').trim()
+  if (!normalized) return null
+  const maxLen = 140
+  return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}…` : normalized
+}
+
 const summarizeMessage = (message) => {
   if (!message || typeof message !== 'object') return String(message)
   if (message.type === 'viewer.hello') return `viewer.hello device=${message.device_id || '—'}`
@@ -108,10 +230,16 @@ const summarizeMessage = (message) => {
   if (message.type === 'event.append') {
     const eventType = message.event_type || 'event'
     const severity = message.severity || 'info'
-    return `event.append ${eventType} ${severity}`
+    const detail = summarizeEventPayload(message.payload)
+    return detail ? `event.append ${eventType} ${severity} — ${detail}` : `event.append ${eventType} ${severity}`
   }
 
   return formatInline(message)
+}
+
+const toggleExpandedEntry = (entry) => {
+  const key = `${entry.ts}:${entry.summary}`
+  expandedEntryKey.value = expandedEntryKey.value === key ? null : key
 }
 
 let pollTimer = null
@@ -183,20 +311,44 @@ const startPolling = () => {
   pollTimer = window.setInterval(() => {
     void checkHealth()
   }, 5000)
+  isPolling.value = true
+}
+
+const stopPolling = () => {
+  pollTimer && window.clearInterval(pollTimer)
+  pollTimer = null
+  isPolling.value = false
+}
+
+const togglePolling = () => {
+  if (isPolling.value) {
+    stopPolling()
+  } else {
+    void checkHealth()
+    startPolling()
+  }
 }
 
 watch(
   () => relayUrl.value,
   (value) => {
     window.localStorage.setItem(storageKey, value)
-    void checkHealth()
+    if (isPolling.value) {
+      void checkHealth()
+    }
   }
 )
 
 watch(
   () => viewerToken.value,
-  (value) => {
+  async (value) => {
     window.localStorage.setItem(viewerTokenKey, value)
+
+    const exchanged = await maybeExchangePairingToken(value)
+    if (exchanged) {
+      return
+    }
+
     connectViewer()
   }
 )
@@ -219,6 +371,12 @@ const disconnectViewer = () => {
 
 const connectViewer = () => {
   disconnectViewer()
+
+  if (isExchanging.value) {
+    wsStatus.value = 'connecting'
+    wsError.value = 'Exchanging pairing token…'
+    return
+  }
 
   const wsUrl = relayWsUrl.value
   if (!wsUrl) {
@@ -273,7 +431,7 @@ const connectViewer = () => {
 
   connection.addEventListener('error', () => {
     wsStatus.value = 'error'
-    wsError.value = 'WebSocket error'
+    wsError.value = exchangeError.value || 'WebSocket error'
   })
 }
 
@@ -284,7 +442,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  pollTimer && window.clearInterval(pollTimer)
+  stopPolling()
   currentAbort?.abort()
   disconnectViewer()
 })
@@ -318,12 +476,12 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="row row-secondary">
-        <label class="label" for="viewerToken">Viewer token</label>
+        <label class="label" for="viewerToken">Viewer / pairing token</label>
         <input
           id="viewerToken"
           v-model.trim="viewerToken"
           class="input"
-          placeholder="paste viewer token"
+          placeholder="paste pairing code or viewer token"
           autocomplete="off"
           spellcheck="false"
         />
@@ -366,14 +524,18 @@ onBeforeUnmount(() => {
         <button class="button" type="button" @click="checkHealth" :disabled="isChecking">
           {{ isChecking ? 'Checking…' : 'Check now' }}
         </button>
+        <button class="button" type="button" @click="togglePolling">
+          {{ isPolling ? 'Stop auto-check' : 'Start auto-check' }}
+        </button>
         <div class="hint">
-          <div class="hint-line">GET {{ relayHealthUrl || '—' }}</div>
-          <div v-if="lastError" class="hint-line hint-error">{{ lastError }}</div>
-          <div class="hint-line">WS {{ relayWsUrl || '—' }}</div>
-          <div v-if="wsError" class="hint-line hint-error">{{ wsError }}</div>
-        </div>
-      </div>
-    </section>
+           <div class="hint-line">GET {{ relayHealthUrl || '—' }}</div>
+           <div v-if="lastError" class="hint-line hint-error">{{ lastError }}</div>
+           <div class="hint-line">WS {{ relayWsUrl || '—' }}</div>
+           <div v-if="wsError" class="hint-line hint-error">{{ wsError }}</div>
+           <div v-else-if="showExchangeError" class="hint-line hint-error">{{ exchangeError }}</div>
+         </div>
+       </div>
+     </section>
 
     <section class="card console">
       <div class="console-header">
@@ -383,17 +545,30 @@ onBeforeUnmount(() => {
         </div>
         <div class="console-chip" :class="wsStatusTone">{{ wsStatusLabel }}</div>
       </div>
-      <div class="console-body">
-        <div v-if="logEntries.length === 0" class="console-empty">No messages yet.</div>
-        <div v-for="entry in logEntries" :key="entry.ts + entry.summary" class="console-line">
-          <span class="console-time">{{ fmtTime(entry.ts) }}</span>
-          <span class="console-text">{{ entry.summary }}</span>
-        </div>
-      </div>
-      <div class="console-footer">
-        <div class="console-hint">Latest event: {{ summarizeMessage(latestEvent) }}</div>
-        <div class="console-hint">Session: {{ formatInline(latestSnapshot?.session_summary) }}</div>
-      </div>
-    </section>
+       <div class="console-body">
+         <div v-if="logEntries.length === 0" class="console-empty">No messages yet.</div>
+         <div v-for="entry in logEntries" :key="entry.ts + entry.summary" class="console-entry">
+           <div
+             class="console-line console-line-interactive"
+             role="button"
+             tabindex="0"
+             @click="toggleExpandedEntry(entry)"
+             @keydown.enter.prevent="toggleExpandedEntry(entry)"
+             @keydown.space.prevent="toggleExpandedEntry(entry)"
+           >
+             <span class="console-time">{{ fmtTime(entry.ts) }}</span>
+             <span class="console-text">{{ entry.summary }}</span>
+           </div>
+           <pre
+             v-if="expandedEntryKey === `${entry.ts}:${entry.summary}`"
+             class="console-raw"
+           >{{ formatJson(entry.raw) }}</pre>
+         </div>
+       </div>
+       <div class="console-footer">
+         <div class="console-hint">Latest event: {{ summarizeMessage(latestEvent) }}</div>
+         <div class="console-hint">Session: {{ formatInline(latestSnapshot?.session_summary) }}</div>
+       </div>
+     </section>
   </main>
 </template>

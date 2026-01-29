@@ -249,6 +249,30 @@ body {
   border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
 }
 
+.console-line-interactive {
+  cursor: pointer;
+}
+
+.console-line-interactive:focus {
+  outline: none;
+}
+
+.console-line-interactive:focus-visible {
+  box-shadow: 0 0 0 2px rgba(233, 237, 242, 0.22);
+  border-radius: 8px;
+}
+
+.console-raw {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: rgba(233, 237, 242, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .console-line:last-child {
   border-bottom: none;
 }
