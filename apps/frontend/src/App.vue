@@ -16,6 +16,7 @@ const loadViewerToken = () => {
   return stored && stored.trim() ? stored : ''
 }
 const viewerToken = ref(loadViewerToken())
+const hasViewerToken = computed(() => Boolean(String(viewerToken.value || '').trim()))
 const isExchanging = ref(false)
 const exchangeError = ref(null)
 const isChecking = ref(false)
@@ -34,6 +35,72 @@ const latestSnapshot = ref(null)
 const latestEvent = ref(null)
 const expandedEntryKey = ref(null)
 
+const remotecodeMeta = computed(() => {
+  const summary = latestSnapshot.value?.session_summary
+  if (!summary || typeof summary !== 'object') return null
+  return summary.remotecode && typeof summary.remotecode === 'object' ? summary.remotecode : null
+})
+
+const sessionTitle = computed(() => {
+  const title = remotecodeMeta.value?.session?.title
+  return typeof title === 'string' && title.trim() ? title : 'No session title yet'
+})
+
+const sessionStatus = computed(() => {
+  const status = remotecodeMeta.value?.status
+  return status && typeof status === 'object' ? status : null
+})
+
+const sessionStatusLabel = computed(() => {
+  const status = sessionStatus.value
+  if (!status) return 'Unknown'
+  if (status.type === 'busy') return 'Busy'
+  if (status.type === 'idle') return 'Idle'
+  if (status.type === 'retry') return 'Retrying'
+  return 'Unknown'
+})
+
+const sessionStatusTone = computed(() => {
+  const status = sessionStatus.value
+  if (!status) return 'tone-idle'
+  if (status.type === 'busy') return 'tone-online'
+  if (status.type === 'retry') return 'tone-warn'
+  return 'tone-idle'
+})
+
+const todos = computed(() => {
+  const list = remotecodeMeta.value?.todos
+  return Array.isArray(list) ? list : []
+})
+
+const todoCounts = computed(() => {
+  const counts = remotecodeMeta.value?.todoCounts
+  return counts && typeof counts === 'object' ? counts : null
+})
+
+const runningCount = computed(() => {
+  if (todoCounts.value?.in_progress !== undefined) return todoCounts.value.in_progress
+  return todos.value.filter((todo) => todo?.status === 'in_progress').length
+})
+
+const queuedCount = computed(() => {
+  if (todoCounts.value?.pending !== undefined) return todoCounts.value.pending
+  return todos.value.filter((todo) => todo?.status === 'pending').length
+})
+
+const latestToast = computed(() => {
+  const toast = remotecodeMeta.value?.toast
+  return toast && typeof toast === 'object' ? toast : null
+})
+
+const toastTone = computed(() => {
+  const variant = latestToast.value?.variant
+  if (variant === 'success') return 'toast-success'
+  if (variant === 'warning') return 'toast-warning'
+  if (variant === 'error') return 'toast-error'
+  return 'toast-info'
+})
+
 const relayHealthUrl = computed(() => {
   try {
     return new URL('/health', relayUrl.value).toString()
@@ -43,7 +110,7 @@ const relayHealthUrl = computed(() => {
 })
 
 const relayWsUrl = computed(() => {
-  if (!viewerToken.value) {
+  if (!hasViewerToken.value) {
     return null
   }
 
@@ -247,6 +314,18 @@ let currentAbort = null
 let socket = null
 let reconnectTimer = null
 
+const clearViewerToken = () => {
+  exchangeError.value = null
+  viewerToken.value = ''
+}
+
+const invalidateViewerToken = (message) => {
+  exchangeError.value = message
+  deviceId.value = null
+  lastMessageAt.value = null
+  viewerToken.value = ''
+}
+
 const checkHealth = async () => {
   const url = relayHealthUrl.value
   if (!url) {
@@ -342,9 +421,18 @@ watch(
 watch(
   () => viewerToken.value,
   async (value) => {
-    window.localStorage.setItem(viewerTokenKey, value)
+    const normalized = String(value || '').trim()
+    if (normalized) {
+      window.localStorage.setItem(viewerTokenKey, normalized)
+    } else {
+      window.localStorage.removeItem(viewerTokenKey)
+      disconnectViewer()
+      wsStatus.value = 'idle'
+      wsError.value = null
+      return
+    }
 
-    const exchanged = await maybeExchangePairingToken(value)
+    const exchanged = await maybeExchangePairingToken(normalized)
     if (exchanged) {
       return
     }
@@ -387,6 +475,8 @@ const connectViewer = () => {
 
   wsStatus.value = 'connecting'
   wsError.value = null
+  const connectionStartedAt = performance.now()
+  let receivedAnyMessage = false
   const connection = new WebSocket(wsUrl)
   socket = connection
 
@@ -395,6 +485,7 @@ const connectViewer = () => {
   })
 
   connection.addEventListener('message', (event) => {
+    receivedAnyMessage = true
     let payload = null
     try {
       payload = JSON.parse(event.data)
@@ -426,6 +517,12 @@ const connectViewer = () => {
   connection.addEventListener('close', () => {
     if (socket !== connection) return
     wsStatus.value = 'offline'
+    const elapsedMs = Math.round(performance.now() - connectionStartedAt)
+    if (status.value === 'online' && !receivedAnyMessage && elapsedMs < 1500) {
+      wsError.value = 'Viewer token invalid'
+      invalidateViewerToken('Viewer token invalid or expired. Paste a new pairing code.')
+      return
+    }
     reconnectTimer = window.setTimeout(connectViewer, 2000)
   })
 
@@ -462,6 +559,10 @@ onBeforeUnmount(() => {
     </header>
 
     <section class="card">
+      <div v-if="!hasViewerToken" class="setup-note">
+        Paste your pairing code (from <span class="setup-mono">bunx remotecode auth</span>) to unlock the dashboard.
+        We'll store it in your browser.
+      </div>
       <div class="row">
         <label class="label" for="relayUrl">Relay URL</label>
         <input
@@ -527,6 +628,7 @@ onBeforeUnmount(() => {
         <button class="button" type="button" @click="togglePolling">
           {{ isPolling ? 'Stop auto-check' : 'Start auto-check' }}
         </button>
+        <button v-if="hasViewerToken" class="button" type="button" @click="clearViewerToken">Clear token</button>
         <div class="hint">
            <div class="hint-line">GET {{ relayHealthUrl || '—' }}</div>
            <div v-if="lastError" class="hint-line hint-error">{{ lastError }}</div>
@@ -535,9 +637,51 @@ onBeforeUnmount(() => {
            <div v-else-if="showExchangeError" class="hint-line hint-error">{{ exchangeError }}</div>
          </div>
        </div>
-     </section>
+      </section>
 
-    <section class="card console">
+    <section v-if="hasViewerToken" class="card progress">
+      <div class="progress-header">
+        <div>
+          <div class="label">OpenCode</div>
+          <div class="progress-title">{{ sessionTitle }}</div>
+        </div>
+        <div class="progress-chips">
+          <div class="progress-chip" :class="sessionStatusTone">{{ sessionStatusLabel }}</div>
+          <div class="progress-chip progress-chip-muted">Running {{ runningCount }}</div>
+          <div class="progress-chip progress-chip-muted">Queued {{ queuedCount }}</div>
+        </div>
+      </div>
+
+      <div class="progress-grid">
+        <div class="progress-panel">
+          <div class="progress-panel-title">Todos</div>
+          <div v-if="todos.length === 0" class="progress-empty">No todos yet.</div>
+          <div v-else class="todo-list">
+            <div v-for="todo in todos" :key="todo.id" class="todo-item" :class="`todo-${todo.status || 'pending'}`">
+              <div class="todo-status">{{ (todo.status || 'pending').replace('_', ' ') }}</div>
+              <div class="todo-content">{{ todo.content }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="progress-panel">
+          <div class="progress-panel-title">Task status</div>
+          <div v-if="latestToast" class="toast" :class="toastTone">
+            <div class="toast-title">{{ latestToast.title || 'Notification' }}</div>
+            <div class="toast-message">{{ latestToast.message }}</div>
+            <div class="toast-meta">{{ fmtTime(latestToast.ts) }}</div>
+          </div>
+          <div v-else class="progress-empty">No recent task notices.</div>
+
+          <div v-if="sessionStatus?.type === 'retry'" class="toast toast-warning toast-compact">
+            <div class="toast-title">Retry</div>
+            <div class="toast-message">Attempt {{ sessionStatus.attempt }}: {{ sessionStatus.message }}</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="hasViewerToken" class="card console">
       <div class="console-header">
         <div>
           <div class="label">Plugin stream</div>
