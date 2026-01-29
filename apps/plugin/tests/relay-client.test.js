@@ -21,7 +21,9 @@ class FakeWebSocket {
 
   trigger(type, event) {
     const handlers = this.listeners.get(type) ?? [];
-    handlers.forEach((handler) => handler(event));
+    handlers.forEach((handler) => {
+      handler(event);
+    });
   }
 
   send(payload) {
@@ -155,4 +157,38 @@ test("relay client throttles repeated connection logs", () => {
 
   assert.equal(infoCount, 0, "should not treat disconnect as info");
   assert.equal(warnCount + debugCount, 1, "expected throttled logging");
+});
+
+test("relay client reports auth errors without reconnecting", () => {
+  let authMeta = null;
+  let timeoutCount = 0;
+
+  const client = createRelayClient({
+    relayUrl: "http://localhost:8787",
+    deviceId: "device-1",
+    deviceToken: "token-1",
+    logger: {
+      warn: () => {},
+      debug: () => {},
+    },
+    WebSocketImpl: FakeWebSocket,
+    onAuthError: (meta) => {
+      authMeta = meta;
+    },
+    setTimeoutImpl: () => {
+      timeoutCount += 1;
+      return 123;
+    },
+    clearTimeoutImpl: () => {},
+  });
+
+  client.connect();
+  const socket = FakeWebSocket.lastInstance;
+  assert.ok(socket, "expected websocket instance");
+
+  socket.trigger("error", { message: "Unexpected server response: 401" });
+
+  assert.ok(authMeta, "expected auth callback");
+  assert.equal(authMeta.statusCode, 401);
+  assert.equal(timeoutCount, 0, "should not schedule reconnect on auth error");
 });

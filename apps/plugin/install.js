@@ -228,6 +228,7 @@ const ensureOpencodePackage = (packagePath) => {
     type: "module",
     dependencies: {
       qrcode: qrcodeVersion,
+      ws: "^8.18.0",
     },
   };
 
@@ -259,6 +260,7 @@ const ensureOpencodePackage = (packagePath) => {
     dependencies: {
       ...pkg.dependencies,
       qrcode: pkg.dependencies.qrcode ?? qrcodeVersion,
+      ws: pkg.dependencies.ws ?? "^8.18.0",
     },
   };
 
@@ -275,6 +277,7 @@ const pluginEntryContents = `import fs from "node:fs";
 import path from "node:path";
 
 import QRCode from "qrcode";
+import { WebSocket } from "ws";
 
 import { createPlugin } from "../../apps/plugin/src/index.js";
 
@@ -306,7 +309,7 @@ const resolveConfig = (directory) => {
   const deviceToken =
     config.device_token || process.env.DEVICE_TOKEN || null;
 
-  return { relayUrl, deviceId, deviceToken };
+  return { relayUrl, deviceId, deviceToken, configPath };
 };
 
 const shouldForwardEvent = (type) => {
@@ -317,8 +320,27 @@ const shouldForwardEvent = (type) => {
   return type.startsWith("session.") || type.startsWith("message.") || type.startsWith("tool.");
 };
 
+const truncateText = (value, maxLen = 2000) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  if (!Number.isFinite(maxLen) || maxLen <= 0) {
+    return value;
+  }
+
+  if (value.length <= maxLen) {
+    return value;
+  }
+
+  return value.slice(0, maxLen) + "\n... (truncated)";
+};
+
 export const RemoteCode = async ({ client, directory }) => {
-  const { relayUrl, deviceId, deviceToken } = resolveConfig(directory);
+  const { relayUrl, deviceId, deviceToken, configPath } = resolveConfig(directory);
+  if (configPath) {
+    process.env.REMOTECODE_CONFIG_PATH = configPath;
+  }
 
   const core = createPlugin({
     relayUrl,
@@ -327,6 +349,7 @@ export const RemoteCode = async ({ client, directory }) => {
     logger: console,
     dependencies: {
       QRCode,
+      WebSocket,
     },
   });
 
@@ -388,6 +411,9 @@ export const RemoteCode = async ({ client, directory }) => {
     },
 
     "tool.execute.after": async (input, output) => {
+      const rawOutput = typeof output?.output === "string" ? output.output : null;
+      const outputPreview = input.tool === "read" ? null : truncateText(rawOutput);
+      const outputTruncated = Boolean(rawOutput && input.tool !== "read" && rawOutput.length > 2000);
       core.appendEvent({
         eventType: "tool.execute.after",
         payload: {
@@ -396,6 +422,31 @@ export const RemoteCode = async ({ client, directory }) => {
           call_id: input.callID,
           title: output.title,
           metadata: output.metadata,
+          output: outputPreview,
+          output_truncated: outputTruncated,
+        },
+      });
+
+      await refreshAgents();
+    },
+
+    "chat.message": async (input, output) => {
+      const message = output?.message ?? null;
+      const content =
+        typeof message?.content === "string"
+          ? message.content
+          : typeof message?.text === "string"
+            ? message.text
+            : null;
+
+      core.appendEvent({
+        eventType: "chat.message",
+        payload: {
+          session_id: input.sessionID,
+          message_id: input.messageID,
+          agent: input.agent,
+          role: message?.role,
+          content,
         },
       });
 

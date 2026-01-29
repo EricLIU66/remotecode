@@ -228,6 +228,7 @@ export const createRelayClient = ({
   reconnectJitterRatio = 0,
   logThrottleMs = 30_000,
   onOpen,
+  onAuthError,
   WebSocketImpl,
   now = () => Date.now(),
   random = () => Math.random(),
@@ -241,6 +242,7 @@ export const createRelayClient = ({
   let reconnectAttempt = 0;
   let hasEverConnected = false;
   let lastConnectionLogAt = 0;
+  let lastWsUrl = null;
 
   const emitLog = (level, message, details) => {
     const target =
@@ -266,6 +268,16 @@ export const createRelayClient = ({
     const code = maybeError?.code;
     const name = maybeError?.name;
     return { message, code, name };
+  };
+
+  const extractStatusCode = (error) => {
+    const message = error?.message ?? error?.toString?.() ?? "";
+    const match = String(message).match(/\b(\d{3})\b/);
+    if (!match) {
+      return null;
+    }
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? value : null;
   };
 
   const normalizeCloseInfo = (codeOrEvent, reason) => {
@@ -370,6 +382,7 @@ export const createRelayClient = ({
 
     isConnecting = true;
     const wsUrl = buildDeviceWsUrl(relayUrl, deviceId, deviceToken);
+    lastWsUrl = wsUrl;
     const connection = new WebSocketRuntime(wsUrl);
     socket = connection;
 
@@ -442,6 +455,18 @@ export const createRelayClient = ({
     });
 
     addListener("error", (error) => {
+      const statusCode = extractStatusCode(error);
+      if (statusCode === 401 || statusCode === 403) {
+        shouldReconnect = false;
+        clearConnection(connection);
+        void onAuthError?.({
+          statusCode,
+          wsUrl: lastWsUrl,
+          error: serializeError(error),
+        });
+        return;
+      }
+
       maybeLogConnectionIssue({
         event: "relay:connection_error",
         details: { attempt: reconnectAttempt + 1, error: serializeError(error) },
@@ -490,6 +515,104 @@ export const createPlugin = ({
   let currentDeviceId = deviceId;
   let currentDeviceToken = deviceToken;
   let detachHooks = null;
+  let authRepairPromise = null;
+
+  const tryPersistDeviceCredentials = ({ nextDeviceId, nextDeviceToken } = {}) => {
+    const configPath =
+      process.env.REMOTECODE_CONFIG_PATH ??
+      path.resolve(process.cwd(), ".opencode", "remotecode.json");
+
+    if (!nextDeviceId || !nextDeviceToken) {
+      return;
+    }
+
+    if (!fs.existsSync(configPath)) {
+      return;
+    }
+
+    try {
+      const raw = fs.readFileSync(configPath, "utf8");
+      const existing = JSON.parse(raw);
+      if (!existing || typeof existing !== "object") {
+        return;
+      }
+
+      const nextConfig = {
+        ...existing,
+        relay_url: existing.relay_url ?? relayUrl,
+        device_id: nextDeviceId,
+        device_token: nextDeviceToken,
+      };
+
+      fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+      logger.info?.("remotecode_config_updated", { path: configPath });
+    } catch (error) {
+      logger.warn?.("remotecode_config_update_failed", {
+        path: configPath,
+        error: error?.message ?? error,
+      });
+    }
+  };
+
+  const repairAuth = ({ statusCode, wsUrl, error } = {}) => {
+    if (authRepairPromise) {
+      return authRepairPromise;
+    }
+
+    authRepairPromise = (async () => {
+      logger.warn?.("relay:auth_failed_repairing", {
+        status_code: statusCode,
+        ws_url: wsUrl,
+        error,
+      });
+
+      relayClient?.close();
+      relayClient = null;
+
+      const pairing = await requestPairing({
+        relayUrl,
+        deviceId: currentDeviceId,
+        deviceToken: currentDeviceToken,
+      });
+
+      currentDeviceId = pairing.deviceId;
+      currentDeviceToken = pairing.deviceToken;
+      tryPersistDeviceCredentials({
+        nextDeviceId: currentDeviceId,
+        nextDeviceToken: currentDeviceToken,
+      });
+
+      if (pairing.pairingToken) {
+        logger.info?.("pairing_token_received", { expires_at: pairing.expiresAt });
+        await renderPairingQr({
+          relayUrl,
+          deviceId: pairing.deviceId,
+          pairingToken: pairing.pairingToken,
+          expiresAt: pairing.expiresAt,
+          logger,
+          QRCodeImpl: dependencies.QRCode,
+        });
+      }
+
+      relayClient = createRelayClient({
+        relayUrl,
+        deviceId: currentDeviceId,
+        deviceToken: currentDeviceToken,
+        logger,
+        onOpen: sendSnapshot,
+        WebSocketImpl: dependencies.WebSocket,
+        onAuthError: (meta) => {
+          void repairAuth(meta);
+        },
+      });
+
+      relayClient.connect();
+    })().finally(() => {
+      authRepairPromise = null;
+    });
+
+    return authRepairPromise;
+  };
 
   const sendSnapshot = () => {
     if (!relayClient || !currentDeviceId) {
@@ -553,6 +676,9 @@ export const createPlugin = ({
       logger,
       onOpen: sendSnapshot,
       WebSocketImpl: dependencies.WebSocket,
+      onAuthError: (meta) => {
+        void repairAuth(meta);
+      },
     });
 
     relayClient.connect();
