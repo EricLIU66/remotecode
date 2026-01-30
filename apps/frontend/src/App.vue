@@ -33,7 +33,14 @@ const deviceId = ref(null)
 const logEntries = ref([])
 const latestSnapshot = ref(null)
 const latestEvent = ref(null)
+const sessionInfo = ref(null)
+const sessionStatusOverride = ref(null)
 const expandedEntryKey = ref(null)
+const expandedConsoleSection = ref(null)
+const isTokenModalOpen = ref(false)
+const tokenDraft = ref('')
+const activeDiff = ref(null)
+const activeDiffFile = ref(null)
 
 const remotecodeMeta = computed(() => {
   const summary = latestSnapshot.value?.session_summary
@@ -42,12 +49,12 @@ const remotecodeMeta = computed(() => {
 })
 
 const sessionTitle = computed(() => {
-  const title = remotecodeMeta.value?.session?.title
+  const title = sessionInfo.value?.title ?? remotecodeMeta.value?.session?.title
   return typeof title === 'string' && title.trim() ? title : 'No session title yet'
 })
 
 const sessionStatus = computed(() => {
-  const status = remotecodeMeta.value?.status
+  const status = sessionStatusOverride.value ?? remotecodeMeta.value?.status
   return status && typeof status === 'object' ? status : null
 })
 
@@ -252,6 +259,61 @@ const formatJson = (value) => {
   }
 }
 
+const truncateSingleLine = (value, maxLen = 180) => {
+  if (value === null || value === undefined) return ''
+  const normalized = String(value).replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}…` : normalized
+}
+
+const extractModelLabel = (agent) => {
+  if (!agent || typeof agent !== 'object') return null
+  const directKeys = ['model', 'model_name', 'modelName', 'llm', 'engine']
+  for (const key of directKeys) {
+    if (typeof agent[key] === 'string' && agent[key].trim()) return agent[key]
+  }
+
+  if (agent.model && typeof agent.model === 'object') {
+    if (typeof agent.model.modelID === 'string' && agent.model.modelID.trim()) return agent.model.modelID
+    if (typeof agent.model.providerID === 'string' && agent.model.providerID.trim()) return agent.model.providerID
+    if (typeof agent.model.name === 'string' && agent.model.name.trim()) return agent.model.name
+    if (typeof agent.model.id === 'string' && agent.model.id.trim()) return agent.model.id
+  }
+
+  if (agent.llm && typeof agent.llm === 'object') {
+    if (typeof agent.llm.name === 'string' && agent.llm.name.trim()) return agent.llm.name
+    if (typeof agent.llm.model === 'string' && agent.llm.model.trim()) return agent.llm.model
+  }
+
+  if (agent.provider && typeof agent.provider === 'object') {
+    if (typeof agent.provider.model === 'string' && agent.provider.model.trim()) return agent.provider.model
+    if (typeof agent.provider.name === 'string' && agent.provider.name.trim()) return agent.provider.name
+  }
+
+  return null
+}
+
+const extractThinkingFromOutput = (output) => {
+  if (!output) return null
+  const text = String(output)
+  const matches = [...text.matchAll(/(^|\n)\s*Thinking:\s*/g)]
+  if (matches.length === 0) {
+    return null
+  }
+
+  const parts = []
+  for (let i = 0; i < matches.length; i += 1) {
+    const start = (matches[i].index ?? 0) + matches[i][0].length
+    const end = i + 1 < matches.length ? (matches[i + 1].index ?? text.length) : text.length
+    const slice = text.slice(start, end).trim()
+    if (slice) {
+      parts.push(slice)
+    }
+  }
+
+  return parts.length > 0 ? parts.join('\n\n') : null
+}
+
 const extractPreviewText = (value) => {
   if (!value) return null
   if (typeof value === 'string') return value
@@ -287,6 +349,22 @@ const summarizeEventPayload = (payload) => {
   return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}…` : normalized
 }
 
+const setActiveDiff = (entry) => {
+  activeDiff.value = entry
+  const first = entry?.diffBlocks?.[0]
+  activeDiffFile.value = first?.file ?? null
+}
+
+const activeDiffBlock = computed(() => {
+  const diff = activeDiff.value
+  if (!diff || !Array.isArray(diff.diffBlocks)) return null
+  if (activeDiffFile.value) {
+    const match = diff.diffBlocks.find((b) => b.file === activeDiffFile.value)
+    if (match) return match
+  }
+  return diff.diffBlocks[0] ?? null
+})
+
 const summarizeMessage = (message) => {
   if (!message || typeof message !== 'object') return String(message)
   if (message.type === 'viewer.hello') return `viewer.hello device=${message.device_id || '—'}`
@@ -304,8 +382,351 @@ const summarizeMessage = (message) => {
   return formatInline(message)
 }
 
+const formatAgentSummary = (agents) => {
+  if (!Array.isArray(agents) || agents.length === 0) return 'No agents'
+  const rendered = []
+  for (const agent of agents) {
+    if (!agent || typeof agent !== 'object') continue
+    const name = typeof agent.name === 'string' && agent.name.trim() ? agent.name : null
+    const model = extractModelLabel(agent)
+    if (!name && !model) continue
+    rendered.push(model ? `${name ?? 'agent'} (${model})` : `${name}`)
+    if (rendered.length >= 3) break
+  }
+  const suffix = agents.length > rendered.length ? ` +${agents.length - rendered.length}` : ''
+  return rendered.length > 0 ? `${rendered.join(', ')}${suffix}` : `${agents.length} agents`
+}
+
+const formatDiffDetails = (diffList) => {
+  if (!Array.isArray(diffList) || diffList.length === 0) return '—'
+  const blocks = []
+  for (const entry of diffList) {
+    if (!entry || typeof entry !== 'object') continue
+    const file = typeof entry.file === 'string' ? entry.file : 'unknown'
+    const language = typeof entry.language === 'string' ? entry.language : ''
+    const before = entry.before === null || entry.before === undefined ? '' : String(entry.before)
+    const after = entry.after === null || entry.after === undefined ? '' : String(entry.after)
+    blocks.push(
+      `${file}${language ? ` (${language})` : ''}\n\n--- before\n${before}\n\n+++ after\n${after}`
+    )
+  }
+  return blocks.length > 0 ? blocks.join('\n\n===\n\n') : '—'
+}
+
+const buildUnifiedDiffLines = (beforeText, afterText) => {
+  const before = splitNormalizedLines(beforeText)
+  const after = splitNormalizedLines(afterText)
+  if (before.length === 0 && after.length === 0) return []
+
+  const n = before.length
+  const m = after.length
+  const maxCells = 500_000
+  if (n * m > maxCells) {
+    // Fallback: simple delta-only view to stay responsive on very large inputs.
+    const lines = []
+    for (const line of before) lines.push({ type: 'del', text: line })
+    for (const line of after) lines.push({ type: 'add', text: line })
+    return lines
+  }
+
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
+      if (before[i - 1] === after[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1
+      } else {
+        dp[i][j] = dp[i - 1][j] > dp[i][j - 1] ? dp[i - 1][j] : dp[i][j - 1]
+      }
+    }
+  }
+
+  const lines = []
+  let i = n
+  let j = m
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && before[i - 1] === after[j - 1]) {
+      lines.push({ type: 'context', text: before[i - 1] })
+      i -= 1
+      j -= 1
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      lines.push({ type: 'add', text: after[j - 1] })
+      j -= 1
+    } else if (i > 0) {
+      lines.push({ type: 'del', text: before[i - 1] })
+      i -= 1
+    }
+  }
+
+  lines.reverse()
+  return lines
+}
+
+const buildSideBySideDiff = (beforeText, afterText) => {
+  return {
+    before: String(beforeText ?? ''),
+    after: String(afterText ?? ''),
+  }
+}
+
+const splitNormalizedLines = (value) => {
+  const text = String(value ?? '')
+  if (!text) return []
+  const parts = text.split(/\r?\n/)
+  // Avoid counting a trailing newline as an empty "line".
+  if (parts.length > 0 && parts[parts.length - 1] === '') {
+    parts.pop()
+  }
+  return parts
+}
+
+const lcsLength = (a, b, maxCells = 2_000_000) => {
+  const n = a.length
+  const m = b.length
+  if (n === 0 || m === 0) return 0
+  if (n * m > maxCells) {
+    return null
+  }
+
+  let prev = new Array(m + 1).fill(0)
+  let curr = new Array(m + 1).fill(0)
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
+      if (a[i - 1] === b[j - 1]) {
+        curr[j] = prev[j - 1] + 1
+      } else {
+        curr[j] = prev[j] > curr[j - 1] ? prev[j] : curr[j - 1]
+      }
+    }
+    ;[prev, curr] = [curr, prev]
+    curr.fill(0)
+  }
+
+  return prev[m]
+}
+
+const countLineChanges = (beforeText, afterText) => {
+  const beforeLines = splitNormalizedLines(beforeText)
+  const afterLines = splitNormalizedLines(afterText)
+  const len = lcsLength(beforeLines, afterLines)
+  if (typeof len === 'number') {
+    return { added: afterLines.length - len, removed: beforeLines.length - len }
+  }
+
+  // Fallback for very large inputs: preserve responsiveness with a cheap estimate.
+  const delta = afterLines.length - beforeLines.length
+  return {
+    added: delta > 0 ? delta : 0,
+    removed: delta < 0 ? -delta : 0,
+  }
+}
+
+let nextEntryId = 1
+const buildConsoleEntry = (payload) => {
+  const raw = payload
+  const entry = {
+    id: nextEntryId++,
+    ts: new Date().toISOString(),
+    kind: 'unknown',
+    badge: 'MSG',
+    tone: 'tone-idle',
+    text: summarizeMessage(payload),
+    details: null,
+    messageKey: null,
+    raw,
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return entry
+  }
+
+  entry.ts = typeof payload.ts === 'string' ? payload.ts : entry.ts
+
+  if (payload.type === 'snapshot.update') {
+    entry.kind = 'snapshot'
+    entry.badge = 'SNAPSHOT'
+    entry.tone = 'tone-online'
+    const agents = payload.agent_states
+    entry.text = `${formatAgentSummary(agents)}`
+    entry.details = formatJson(payload)
+    return entry
+  }
+
+  if (payload.type === 'event.append') {
+    const eventType = payload.event_type
+    if (eventType === 'session.idle') {
+      return null
+    }
+
+    if (eventType === 'session.status') {
+      sessionStatusOverride.value = payload.payload?.status ?? null
+      return null
+    }
+
+    if (eventType === 'session.diff') {
+      entry.kind = 'diff'
+      entry.badge = 'DIFF'
+      entry.tone = 'tone-warn'
+      const diffList = payload.payload?.diff
+      entry.text = Array.isArray(diffList)
+        ? truncateSingleLine(
+            diffList
+              .map((d) => {
+                const file = d?.file ?? 'unknown file'
+                const { added, removed } = countLineChanges(d?.before, d?.after)
+                return `${file} (+${added}/-${removed})`
+              })
+              .join(', '),
+            160
+          )
+        : 'session.diff'
+      entry.diffBlocks = Array.isArray(diffList)
+        ? diffList.map((d) => ({
+            file: d?.file ?? 'unknown file',
+            language: d?.language,
+            lines: buildUnifiedDiffLines(d?.before, d?.after),
+            columns: buildSideBySideDiff(d?.before, d?.after),
+          }))
+        : []
+      return entry
+    }
+
+    if (eventType === 'session.updated') {
+      entry.kind = 'session'
+      entry.badge = 'SESSION'
+      entry.tone = 'tone-idle'
+      const info = payload.payload?.info
+      const title = typeof info?.title === 'string' ? info.title : null
+      entry.text = title ? title : 'session.updated'
+      entry.details = formatJson(info ?? payload)
+      return entry
+    }
+
+    if (eventType === 'message.part.updated') {
+      entry.kind = 'message'
+      entry.badge = 'MESSAGE'
+      entry.tone = 'tone-online'
+      const part = payload.payload?.part
+      const delta = payload.payload?.delta
+      const baseText = typeof part?.text === 'string' ? part.text : ''
+      const deltaText = typeof delta === 'string' ? delta : ''
+      const combined = `${baseText}${deltaText}`.trim()
+      entry.text = combined || 'message.part.updated'
+      entry.details = formatJson(part ?? payload)
+      if (part?.sessionID && part?.messageID) {
+        entry.messageKey = `${part.sessionID}:${part.messageID}`
+      }
+      return entry
+    }
+
+    entry.kind = 'event'
+    entry.badge = 'EVENT'
+    entry.tone = payload.severity === 'error' ? 'tone-offline' : 'tone-idle'
+    entry.text = summarizeMessage(payload)
+    entry.details = formatJson(payload)
+    return entry
+  }
+
+  return entry
+}
+
+const modelLabel = computed(() => {
+  const agents = latestSnapshot.value?.agent_states
+  if (!Array.isArray(agents)) return '—'
+  for (const agent of agents) {
+    const label = extractModelLabel(agent)
+    if (label) return label
+  }
+  return '—'
+})
+
+const modelDisplay = computed(() => {
+  if (modelLabel.value === '—') return '—'
+  return truncateSingleLine(modelLabel.value, 32)
+})
+
+const thinkingEntries = computed(() => {
+  const results = []
+  for (const entry of logEntries.value) {
+    const raw = entry?.raw
+    if (!raw || typeof raw !== 'object') continue
+    if (raw.type !== 'event.append') continue
+    if (raw.event_type !== 'tool.execute.after') continue
+    if (raw.payload?.tool !== 'background_output') continue
+    const output = raw.payload?.output
+    if (typeof output !== 'string' || !output.trim()) continue
+    const thinking = extractThinkingFromOutput(output)
+    if (!thinking) continue
+
+    results.push({ ts: raw.ts ?? entry.ts, text: thinking })
+    if (results.length >= 6) break
+  }
+  return results
+})
+
+const thinkingPreview = computed(() => {
+  if (thinkingEntries.value.length === 0) return 'No thinking yet.'
+  return truncateSingleLine(thinkingEntries.value[0].text, 200)
+})
+
+const thinkingBody = computed(() => {
+  if (thinkingEntries.value.length === 0) return '—'
+  return thinkingEntries.value
+    .map((entry) => {
+      const when = fmtTime(entry.ts)
+      return `${when}\n${entry.text}`
+    })
+    .join('\n\n---\n\n')
+})
+
+const finalSummary = computed(() => {
+  const summary = latestSnapshot.value?.session_summary
+  if (summary === null || summary === undefined) return null
+  if (typeof summary === 'string') return summary
+  if (typeof summary !== 'object') return String(summary)
+
+  if (typeof summary.summary === 'string' && summary.summary.trim()) {
+    return summary.summary
+  }
+
+  return formatJson(summary)
+})
+
+const finalPreview = computed(() => {
+  if (!finalSummary.value) return 'No summary yet.'
+  return truncateSingleLine(finalSummary.value, 200)
+})
+
+const finalBody = computed(() => {
+  if (!finalSummary.value) return '—'
+  return finalSummary.value
+})
+
+const toggleConsoleSection = (key) => {
+  expandedConsoleSection.value = expandedConsoleSection.value === key ? null : key
+}
+
+const openTokenModal = () => {
+  tokenDraft.value = viewerToken.value
+  isTokenModalOpen.value = true
+}
+
+const closeTokenModal = () => {
+  isTokenModalOpen.value = false
+}
+
+const saveViewerToken = () => {
+  viewerToken.value = String(tokenDraft.value || '').trim()
+  isTokenModalOpen.value = false
+}
+
+const clearViewerTokenFromModal = () => {
+  clearViewerToken()
+  tokenDraft.value = ''
+  isTokenModalOpen.value = false
+}
+
 const toggleExpandedEntry = (entry) => {
-  const key = `${entry.ts}:${entry.summary}`
+  const key = entry?.id ?? null
   expandedEntryKey.value = expandedEntryKey.value === key ? null : key
 }
 
@@ -503,15 +924,39 @@ const connectViewer = () => {
 
     if (payload?.type === 'event.append') {
       latestEvent.value = payload
+      if (payload.event_type === 'session.updated' && payload.payload?.info) {
+        sessionInfo.value = payload.payload.info
+      }
     }
 
-    const entry = {
-      ts: new Date().toISOString(),
-      summary: summarizeMessage(payload),
-      raw: payload,
+    const entry = buildConsoleEntry(payload)
+    if (entry) {
+      if (entry.messageKey) {
+        const existingIndex = logEntries.value.findIndex(
+          (existing) => existing.messageKey === entry.messageKey
+        )
+        if (existingIndex >= 0) {
+          const existing = logEntries.value[existingIndex]
+          const merged = {
+            ...existing,
+            text: entry.text,
+            details: entry.details,
+            ts: entry.ts,
+            raw: entry.raw,
+          }
+          logEntries.value = [
+            merged,
+            ...logEntries.value.slice(0, existingIndex),
+            ...logEntries.value.slice(existingIndex + 1),
+          ]
+          lastMessageAt.value = merged.ts
+          return
+        }
+      }
+
+      logEntries.value = [entry, ...logEntries.value].slice(0, 200)
+      lastMessageAt.value = entry.ts
     }
-    logEntries.value = [entry, ...logEntries.value].slice(0, 200)
-    lastMessageAt.value = entry.ts
   })
 
   connection.addEventListener('close', () => {
@@ -555,13 +1000,19 @@ onBeforeUnmount(() => {
           <div class="brand-subtitle">Relay Status</div>
         </div>
       </div>
-      <div class="pulse" :class="statusTone" aria-hidden="true"></div>
+      <div class="header-actions">
+        <div class="pulse" :class="statusTone" aria-hidden="true"></div>
+        <button class="profile-button" type="button" @click="openTokenModal" aria-label="Pairing token">
+          <span class="profile-label">ME</span>
+        </button>
+      </div>
     </header>
 
     <section class="card">
       <div v-if="!hasViewerToken" class="setup-note">
         Paste your pairing code (from <span class="setup-mono">bunx remotecode auth</span>) to unlock the dashboard.
         We'll store it in your browser.
+        <button class="button button-ghost" type="button" @click="openTokenModal">Add pairing token</button>
       </div>
       <div class="row">
         <label class="label" for="relayUrl">Relay URL</label>
@@ -571,18 +1022,6 @@ onBeforeUnmount(() => {
           class="input"
           inputmode="url"
           placeholder="http://localhost:8787"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </div>
-
-      <div class="row row-secondary">
-        <label class="label" for="viewerToken">Viewer / pairing token</label>
-        <input
-          id="viewerToken"
-          v-model.trim="viewerToken"
-          class="input"
-          placeholder="paste pairing code or viewer token"
           autocomplete="off"
           spellcheck="false"
         />
@@ -619,6 +1058,10 @@ onBeforeUnmount(() => {
             {{ Array.isArray(latestSnapshot?.agent_states) ? latestSnapshot.agent_states.length : '—' }}
           </div>
         </div>
+        <div class="metric">
+          <div class="metric-label">Model</div>
+          <div class="metric-value">{{ modelDisplay }}</div>
+        </div>
       </div>
 
       <div class="footer">
@@ -628,7 +1071,7 @@ onBeforeUnmount(() => {
         <button class="button" type="button" @click="togglePolling">
           {{ isPolling ? 'Stop auto-check' : 'Start auto-check' }}
         </button>
-        <button v-if="hasViewerToken" class="button" type="button" @click="clearViewerToken">Clear token</button>
+        <button class="button" type="button" @click="openTokenModal">Manage token</button>
         <div class="hint">
            <div class="hint-line">GET {{ relayHealthUrl || '—' }}</div>
            <div v-if="lastError" class="hint-line hint-error">{{ lastError }}</div>
@@ -689,30 +1132,144 @@ onBeforeUnmount(() => {
         </div>
         <div class="console-chip" :class="wsStatusTone">{{ wsStatusLabel }}</div>
       </div>
-       <div class="console-body">
-         <div v-if="logEntries.length === 0" class="console-empty">No messages yet.</div>
-         <div v-for="entry in logEntries" :key="entry.ts + entry.summary" class="console-entry">
-           <div
-             class="console-line console-line-interactive"
-             role="button"
-             tabindex="0"
-             @click="toggleExpandedEntry(entry)"
-             @keydown.enter.prevent="toggleExpandedEntry(entry)"
-             @keydown.space.prevent="toggleExpandedEntry(entry)"
-           >
-             <span class="console-time">{{ fmtTime(entry.ts) }}</span>
-             <span class="console-text">{{ entry.summary }}</span>
-           </div>
-           <pre
-             v-if="expandedEntryKey === `${entry.ts}:${entry.summary}`"
-             class="console-raw"
-           >{{ formatJson(entry.raw) }}</pre>
-         </div>
-       </div>
-       <div class="console-footer">
-         <div class="console-hint">Latest event: {{ summarizeMessage(latestEvent) }}</div>
-         <div class="console-hint">Session: {{ formatInline(latestSnapshot?.session_summary) }}</div>
-       </div>
-     </section>
+        <div class="console-body">
+          <div class="console-highlights">
+            <div
+              class="console-line console-line-interactive console-highlight-line"
+              role="button"
+              tabindex="0"
+              @click="toggleConsoleSection('thinking')"
+              @keydown.enter.prevent="toggleConsoleSection('thinking')"
+              @keydown.space.prevent="toggleConsoleSection('thinking')"
+            >
+              <span class="console-time console-highlight-label">Thinking</span>
+              <span class="console-text">{{ thinkingPreview }}</span>
+            </div>
+            <pre v-if="expandedConsoleSection === 'thinking'" class="console-raw">{{ thinkingBody }}</pre>
+
+            <div
+              class="console-line console-line-interactive console-highlight-line"
+              role="button"
+              tabindex="0"
+              @click="toggleConsoleSection('final')"
+              @keydown.enter.prevent="toggleConsoleSection('final')"
+              @keydown.space.prevent="toggleConsoleSection('final')"
+            >
+              <span class="console-time console-highlight-label">Final</span>
+              <span class="console-text">{{ finalPreview }}</span>
+            </div>
+            <pre v-if="expandedConsoleSection === 'final'" class="console-raw">{{ finalBody }}</pre>
+          </div>
+
+          <div v-if="logEntries.length === 0" class="console-empty">No messages yet.</div>
+          <div v-for="entry in logEntries" :key="entry.id" class="console-entry" :class="`console-entry-${entry.kind}`">
+            <div
+              class="console-line console-line-interactive"
+              role="button"
+              tabindex="0"
+              @click="toggleExpandedEntry(entry)"
+              @keydown.enter.prevent="toggleExpandedEntry(entry)"
+              @keydown.space.prevent="toggleExpandedEntry(entry)"
+            >
+              <span class="console-time">{{ fmtTime(entry.ts) }}</span>
+              <span class="console-text">
+                <span class="console-badge" :class="entry.tone">{{ entry.badge }}</span>
+                {{ entry.text }}
+              </span>
+            </div>
+            <pre
+              v-if="expandedEntryKey === entry.id && entry.kind !== 'diff'"
+              class="console-raw"
+            >{{ entry.details ?? formatJson(entry.raw) }}</pre>
+            <div
+              v-if="expandedEntryKey === entry.id && entry.kind === 'diff'"
+              class="diff-open-trigger"
+              role="button"
+              tabindex="0"
+              @click.stop="setActiveDiff(entry)"
+              @keydown.enter.stop.prevent="setActiveDiff(entry)"
+              @keydown.space.stop.prevent="setActiveDiff(entry)"
+            >
+              View diff details
+            </div>
+            <div
+              v-if="activeDiff?.id === entry.id && entry.kind === 'diff'"
+              class="sr-only"
+              aria-live="polite"
+            >Diff modal open</div>
+          </div>
+        </div>
+      </section>
   </main>
+
+  <div v-if="isTokenModalOpen" class="modal-backdrop" @click.self="closeTokenModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Pairing token">
+      <div class="modal-title">Pairing token</div>
+      <div class="modal-subtitle">
+        Paste the pairing code from <span class="setup-mono">bunx remotecode auth</span> to connect.
+      </div>
+      <input
+        v-model.trim="tokenDraft"
+        class="input modal-input"
+        placeholder="paste pairing code or viewer token"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="modal-actions">
+        <button class="button" type="button" @click="saveViewerToken" :disabled="!tokenDraft.trim()">
+          Save token
+        </button>
+        <button class="button button-ghost" type="button" @click="closeTokenModal">Cancel</button>
+        <button
+          v-if="hasViewerToken"
+          class="button button-ghost"
+          type="button"
+          @click="clearViewerTokenFromModal"
+        >
+          Clear token
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="activeDiff" class="modal-backdrop" @click.self="activeDiff = null">
+    <div class="modal-card diff-modal" role="dialog" aria-modal="true" aria-label="Diff details" tabindex="-1">
+      <div class="diff-modal-header">
+        <div class="modal-title">Diff</div>
+        <button class="diff-close" type="button" @click="activeDiff = null" aria-label="Close diff">×</button>
+      </div>
+      <div class="diff-tabs" v-if="activeDiff?.diffBlocks?.length">
+        <button
+          v-for="block in activeDiff.diffBlocks"
+          :key="block.file"
+          type="button"
+          class="diff-tab"
+          :class="{ 'diff-tab-active': activeDiffFile === block.file }"
+          @click="activeDiffFile = block.file"
+        >
+          {{ block.file }}
+        </button>
+      </div>
+
+      <div class="diff-blocks" v-if="activeDiffBlock">
+        <div
+          class="diff-block"
+          :class="activeDiffBlock.language ? `language-${activeDiffBlock.language}` : 'language-text'"
+          :data-lang="activeDiffBlock.language || 'text'"
+        >
+          <div class="diff-block-title">{{ activeDiffBlock.file }}</div>
+          <div class="diff-columns">
+            <div class="diff-col diff-col-left">
+              <div class="diff-col-label">Before</div>
+              <pre class="diff-pre">{{ activeDiffBlock.columns.before }}</pre>
+            </div>
+            <div class="diff-col diff-col-right">
+              <div class="diff-col-label">After</div>
+              <pre class="diff-pre">{{ activeDiffBlock.columns.after }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
