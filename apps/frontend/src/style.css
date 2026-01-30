@@ -545,6 +545,68 @@ body {
   background: rgba(180, 35, 24, 0.16);
 }
 
+.diff-blocks {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.diff-block {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-block-title {
+  padding: 8px 12px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.diff-table {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+}
+
+.diff-row {
+  display: contents;
+}
+
+.diff-row-left,
+.diff-row-right {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-row-left {
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.diff-row.diff-removed .diff-row-left {
+  background: rgba(180, 35, 24, 0.16);
+}
+
+.diff-row.diff-added .diff-row-right {
+  background: rgba(15, 118, 110, 0.18);
+}
+
+.diff-row.diff-changed .diff-row-left,
+.diff-row.diff-changed .diff-row-right {
+  background: rgba(234, 179, 8, 0.14);
+}
+
+.diff-row.diff-empty .diff-row-left,
+.diff-row.diff-empty .diff-row-right {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .console-empty {
   color: var(--console-muted);
   padding: 8px 0;
