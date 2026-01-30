@@ -671,10 +671,12 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(7, 10, 14, 0.55);
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 24px;
-  z-index: 50;
+  z-index: 9990;
+  pointer-events: auto;
 }
 
 .modal-card {
@@ -684,6 +686,9 @@ body {
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.95), rgba(244, 247, 250, 0.88));
   padding: 20px;
   box-shadow: 0 30px 70px rgba(10, 16, 24, 0.28);
+  position: relative;
+  z-index: 9991;
+  pointer-events: auto;
 }
 
 .diff-modal {
