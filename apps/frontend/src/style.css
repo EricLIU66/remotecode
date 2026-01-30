@@ -675,7 +675,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  z-index: 9990;
+  z-index: 1400;
   pointer-events: auto;
 }
 
@@ -687,7 +687,7 @@ body {
   padding: 20px;
   box-shadow: 0 30px 70px rgba(10, 16, 24, 0.28);
   position: relative;
-  z-index: 9991;
+  z-index: 1500;
   pointer-events: auto;
 }
 
@@ -695,6 +695,7 @@ body {
   width: min(960px, 96vw);
   max-height: 86vh;
   overflow: auto;
+  pointer-events: auto;
 }
 
 .diff-modal-header {

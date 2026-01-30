@@ -1122,7 +1122,7 @@ onBeforeUnmount(() => {
   </div>
 
   <div v-if="activeDiff" class="modal-backdrop" @click.self="activeDiff = null">
-    <div class="modal-card diff-modal" role="dialog" aria-modal="true" aria-label="Diff details">
+    <div class="modal-card diff-modal" role="dialog" aria-modal="true" aria-label="Diff details" tabindex="-1">
       <div class="diff-modal-header">
         <div class="modal-title">Diff</div>
         <button class="diff-close" type="button" @click="activeDiff = null">Close</button>
