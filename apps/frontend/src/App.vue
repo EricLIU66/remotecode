@@ -33,7 +33,12 @@ const deviceId = ref(null)
 const logEntries = ref([])
 const latestSnapshot = ref(null)
 const latestEvent = ref(null)
+const sessionInfo = ref(null)
+const sessionStatusOverride = ref(null)
 const expandedEntryKey = ref(null)
+const expandedConsoleSection = ref(null)
+const isTokenModalOpen = ref(false)
+const tokenDraft = ref('')
 
 const remotecodeMeta = computed(() => {
   const summary = latestSnapshot.value?.session_summary
@@ -42,12 +47,12 @@ const remotecodeMeta = computed(() => {
 })
 
 const sessionTitle = computed(() => {
-  const title = remotecodeMeta.value?.session?.title
+  const title = sessionInfo.value?.title ?? remotecodeMeta.value?.session?.title
   return typeof title === 'string' && title.trim() ? title : 'No session title yet'
 })
 
 const sessionStatus = computed(() => {
-  const status = remotecodeMeta.value?.status
+  const status = sessionStatusOverride.value ?? remotecodeMeta.value?.status
   return status && typeof status === 'object' ? status : null
 })
 
@@ -252,6 +257,61 @@ const formatJson = (value) => {
   }
 }
 
+const truncateSingleLine = (value, maxLen = 180) => {
+  if (value === null || value === undefined) return ''
+  const normalized = String(value).replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}…` : normalized
+}
+
+const extractModelLabel = (agent) => {
+  if (!agent || typeof agent !== 'object') return null
+  const directKeys = ['model', 'model_name', 'modelName', 'llm', 'engine']
+  for (const key of directKeys) {
+    if (typeof agent[key] === 'string' && agent[key].trim()) return agent[key]
+  }
+
+  if (agent.model && typeof agent.model === 'object') {
+    if (typeof agent.model.modelID === 'string' && agent.model.modelID.trim()) return agent.model.modelID
+    if (typeof agent.model.providerID === 'string' && agent.model.providerID.trim()) return agent.model.providerID
+    if (typeof agent.model.name === 'string' && agent.model.name.trim()) return agent.model.name
+    if (typeof agent.model.id === 'string' && agent.model.id.trim()) return agent.model.id
+  }
+
+  if (agent.llm && typeof agent.llm === 'object') {
+    if (typeof agent.llm.name === 'string' && agent.llm.name.trim()) return agent.llm.name
+    if (typeof agent.llm.model === 'string' && agent.llm.model.trim()) return agent.llm.model
+  }
+
+  if (agent.provider && typeof agent.provider === 'object') {
+    if (typeof agent.provider.model === 'string' && agent.provider.model.trim()) return agent.provider.model
+    if (typeof agent.provider.name === 'string' && agent.provider.name.trim()) return agent.provider.name
+  }
+
+  return null
+}
+
+const extractThinkingFromOutput = (output) => {
+  if (!output) return null
+  const text = String(output)
+  const matches = [...text.matchAll(/(^|\n)\s*Thinking:\s*/g)]
+  if (matches.length === 0) {
+    return null
+  }
+
+  const parts = []
+  for (let i = 0; i < matches.length; i += 1) {
+    const start = (matches[i].index ?? 0) + matches[i][0].length
+    const end = i + 1 < matches.length ? (matches[i + 1].index ?? text.length) : text.length
+    const slice = text.slice(start, end).trim()
+    if (slice) {
+      parts.push(slice)
+    }
+  }
+
+  return parts.length > 0 ? parts.join('\n\n') : null
+}
+
 const extractPreviewText = (value) => {
   if (!value) return null
   if (typeof value === 'string') return value
@@ -304,8 +364,224 @@ const summarizeMessage = (message) => {
   return formatInline(message)
 }
 
+const formatAgentSummary = (agents) => {
+  if (!Array.isArray(agents) || agents.length === 0) return 'No agents'
+  const rendered = []
+  for (const agent of agents) {
+    if (!agent || typeof agent !== 'object') continue
+    const name = typeof agent.name === 'string' && agent.name.trim() ? agent.name : null
+    const model = extractModelLabel(agent)
+    if (!name && !model) continue
+    rendered.push(model ? `${name ?? 'agent'} (${model})` : `${name}`)
+    if (rendered.length >= 3) break
+  }
+  const suffix = agents.length > rendered.length ? ` +${agents.length - rendered.length}` : ''
+  return rendered.length > 0 ? `${rendered.join(', ')}${suffix}` : `${agents.length} agents`
+}
+
+const formatDiffDetails = (diffList) => {
+  if (!Array.isArray(diffList) || diffList.length === 0) return '—'
+  const blocks = []
+  for (const entry of diffList) {
+    if (!entry || typeof entry !== 'object') continue
+    const file = typeof entry.file === 'string' ? entry.file : 'unknown'
+    const language = typeof entry.language === 'string' ? entry.language : ''
+    const before = entry.before === null || entry.before === undefined ? '' : String(entry.before)
+    const after = entry.after === null || entry.after === undefined ? '' : String(entry.after)
+    blocks.push(
+      `${file}${language ? ` (${language})` : ''}\n\n--- before\n${before}\n\n+++ after\n${after}`
+    )
+  }
+  return blocks.length > 0 ? blocks.join('\n\n===\n\n') : '—'
+}
+
+let nextEntryId = 1
+const buildConsoleEntry = (payload) => {
+  const raw = payload
+  const entry = {
+    id: nextEntryId++,
+    ts: new Date().toISOString(),
+    kind: 'unknown',
+    badge: 'MSG',
+    tone: 'tone-idle',
+    text: summarizeMessage(payload),
+    details: null,
+    raw,
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return entry
+  }
+
+  entry.ts = typeof payload.ts === 'string' ? payload.ts : entry.ts
+
+  if (payload.type === 'snapshot.update') {
+    entry.kind = 'snapshot'
+    entry.badge = 'SNAPSHOT'
+    entry.tone = 'tone-online'
+    const agents = payload.agent_states
+    entry.text = `${formatAgentSummary(agents)}`
+    entry.details = formatJson(payload)
+    return entry
+  }
+
+  if (payload.type === 'event.append') {
+    const eventType = payload.event_type
+    if (eventType === 'session.idle') {
+      return null
+    }
+
+    if (eventType === 'session.status') {
+      sessionStatusOverride.value = payload.payload?.status ?? null
+      return null
+    }
+
+    if (eventType === 'session.diff') {
+      entry.kind = 'diff'
+      entry.badge = 'DIFF'
+      entry.tone = 'tone-warn'
+      const diffList = payload.payload?.diff
+      const firstFile = Array.isArray(diffList) && diffList[0]?.file ? diffList[0].file : null
+      const count = Array.isArray(diffList) ? diffList.length : 0
+      entry.text = firstFile ? `${firstFile}${count > 1 ? ` +${count - 1}` : ''}` : 'session.diff'
+      entry.details = formatDiffDetails(diffList)
+      return entry
+    }
+
+    if (eventType === 'session.updated') {
+      entry.kind = 'session'
+      entry.badge = 'SESSION'
+      entry.tone = 'tone-idle'
+      const info = payload.payload?.info
+      const title = typeof info?.title === 'string' ? info.title : null
+      entry.text = title ? title : 'session.updated'
+      entry.details = formatJson(info ?? payload)
+      return entry
+    }
+
+    if (eventType === 'message.part.updated') {
+      entry.kind = 'message'
+      entry.badge = 'MESSAGE'
+      entry.tone = 'tone-online'
+      const part = payload.payload?.part
+      const delta = payload.payload?.delta
+      const baseText = typeof part?.text === 'string' ? part.text : ''
+      const deltaText = typeof delta === 'string' ? delta : ''
+      const combined = `${baseText}${deltaText}`.trim()
+      entry.text = combined || 'message.part.updated'
+      entry.details = formatJson(part ?? payload)
+      return entry
+    }
+
+    entry.kind = 'event'
+    entry.badge = 'EVENT'
+    entry.tone = payload.severity === 'error' ? 'tone-offline' : 'tone-idle'
+    entry.text = summarizeMessage(payload)
+    entry.details = formatJson(payload)
+    return entry
+  }
+
+  return entry
+}
+
+const modelLabel = computed(() => {
+  const agents = latestSnapshot.value?.agent_states
+  if (!Array.isArray(agents)) return '—'
+  for (const agent of agents) {
+    const label = extractModelLabel(agent)
+    if (label) return label
+  }
+  return '—'
+})
+
+const modelDisplay = computed(() => {
+  if (modelLabel.value === '—') return '—'
+  return truncateSingleLine(modelLabel.value, 32)
+})
+
+const thinkingEntries = computed(() => {
+  const results = []
+  for (const entry of logEntries.value) {
+    const raw = entry?.raw
+    if (!raw || typeof raw !== 'object') continue
+    if (raw.type !== 'event.append') continue
+    if (raw.event_type !== 'tool.execute.after') continue
+    if (raw.payload?.tool !== 'background_output') continue
+    const output = raw.payload?.output
+    if (typeof output !== 'string' || !output.trim()) continue
+    const thinking = extractThinkingFromOutput(output)
+    if (!thinking) continue
+
+    results.push({ ts: raw.ts ?? entry.ts, text: thinking })
+    if (results.length >= 6) break
+  }
+  return results
+})
+
+const thinkingPreview = computed(() => {
+  if (thinkingEntries.value.length === 0) return 'No thinking yet.'
+  return truncateSingleLine(thinkingEntries.value[0].text, 200)
+})
+
+const thinkingBody = computed(() => {
+  if (thinkingEntries.value.length === 0) return '—'
+  return thinkingEntries.value
+    .map((entry) => {
+      const when = fmtTime(entry.ts)
+      return `${when}\n${entry.text}`
+    })
+    .join('\n\n---\n\n')
+})
+
+const finalSummary = computed(() => {
+  const summary = latestSnapshot.value?.session_summary
+  if (summary === null || summary === undefined) return null
+  if (typeof summary === 'string') return summary
+  if (typeof summary !== 'object') return String(summary)
+
+  if (typeof summary.summary === 'string' && summary.summary.trim()) {
+    return summary.summary
+  }
+
+  return formatJson(summary)
+})
+
+const finalPreview = computed(() => {
+  if (!finalSummary.value) return 'No summary yet.'
+  return truncateSingleLine(finalSummary.value, 200)
+})
+
+const finalBody = computed(() => {
+  if (!finalSummary.value) return '—'
+  return finalSummary.value
+})
+
+const toggleConsoleSection = (key) => {
+  expandedConsoleSection.value = expandedConsoleSection.value === key ? null : key
+}
+
+const openTokenModal = () => {
+  tokenDraft.value = viewerToken.value
+  isTokenModalOpen.value = true
+}
+
+const closeTokenModal = () => {
+  isTokenModalOpen.value = false
+}
+
+const saveViewerToken = () => {
+  viewerToken.value = String(tokenDraft.value || '').trim()
+  isTokenModalOpen.value = false
+}
+
+const clearViewerTokenFromModal = () => {
+  clearViewerToken()
+  tokenDraft.value = ''
+  isTokenModalOpen.value = false
+}
+
 const toggleExpandedEntry = (entry) => {
-  const key = `${entry.ts}:${entry.summary}`
+  const key = entry?.id ?? null
   expandedEntryKey.value = expandedEntryKey.value === key ? null : key
 }
 
@@ -503,15 +779,16 @@ const connectViewer = () => {
 
     if (payload?.type === 'event.append') {
       latestEvent.value = payload
+      if (payload.event_type === 'session.updated' && payload.payload?.info) {
+        sessionInfo.value = payload.payload.info
+      }
     }
 
-    const entry = {
-      ts: new Date().toISOString(),
-      summary: summarizeMessage(payload),
-      raw: payload,
+    const entry = buildConsoleEntry(payload)
+    if (entry) {
+      logEntries.value = [entry, ...logEntries.value].slice(0, 200)
+      lastMessageAt.value = entry.ts
     }
-    logEntries.value = [entry, ...logEntries.value].slice(0, 200)
-    lastMessageAt.value = entry.ts
   })
 
   connection.addEventListener('close', () => {
@@ -555,13 +832,19 @@ onBeforeUnmount(() => {
           <div class="brand-subtitle">Relay Status</div>
         </div>
       </div>
-      <div class="pulse" :class="statusTone" aria-hidden="true"></div>
+      <div class="header-actions">
+        <div class="pulse" :class="statusTone" aria-hidden="true"></div>
+        <button class="profile-button" type="button" @click="openTokenModal" aria-label="Pairing token">
+          <span class="profile-label">ME</span>
+        </button>
+      </div>
     </header>
 
     <section class="card">
       <div v-if="!hasViewerToken" class="setup-note">
         Paste your pairing code (from <span class="setup-mono">bunx remotecode auth</span>) to unlock the dashboard.
         We'll store it in your browser.
+        <button class="button button-ghost" type="button" @click="openTokenModal">Add pairing token</button>
       </div>
       <div class="row">
         <label class="label" for="relayUrl">Relay URL</label>
@@ -571,18 +854,6 @@ onBeforeUnmount(() => {
           class="input"
           inputmode="url"
           placeholder="http://localhost:8787"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </div>
-
-      <div class="row row-secondary">
-        <label class="label" for="viewerToken">Viewer / pairing token</label>
-        <input
-          id="viewerToken"
-          v-model.trim="viewerToken"
-          class="input"
-          placeholder="paste pairing code or viewer token"
           autocomplete="off"
           spellcheck="false"
         />
@@ -619,6 +890,10 @@ onBeforeUnmount(() => {
             {{ Array.isArray(latestSnapshot?.agent_states) ? latestSnapshot.agent_states.length : '—' }}
           </div>
         </div>
+        <div class="metric">
+          <div class="metric-label">Model</div>
+          <div class="metric-value">{{ modelDisplay }}</div>
+        </div>
       </div>
 
       <div class="footer">
@@ -628,7 +903,7 @@ onBeforeUnmount(() => {
         <button class="button" type="button" @click="togglePolling">
           {{ isPolling ? 'Stop auto-check' : 'Start auto-check' }}
         </button>
-        <button v-if="hasViewerToken" class="button" type="button" @click="clearViewerToken">Clear token</button>
+        <button class="button" type="button" @click="openTokenModal">Manage token</button>
         <div class="hint">
            <div class="hint-line">GET {{ relayHealthUrl || '—' }}</div>
            <div v-if="lastError" class="hint-line hint-error">{{ lastError }}</div>
@@ -689,30 +964,87 @@ onBeforeUnmount(() => {
         </div>
         <div class="console-chip" :class="wsStatusTone">{{ wsStatusLabel }}</div>
       </div>
-       <div class="console-body">
-         <div v-if="logEntries.length === 0" class="console-empty">No messages yet.</div>
-         <div v-for="entry in logEntries" :key="entry.ts + entry.summary" class="console-entry">
-           <div
-             class="console-line console-line-interactive"
-             role="button"
-             tabindex="0"
-             @click="toggleExpandedEntry(entry)"
-             @keydown.enter.prevent="toggleExpandedEntry(entry)"
-             @keydown.space.prevent="toggleExpandedEntry(entry)"
-           >
-             <span class="console-time">{{ fmtTime(entry.ts) }}</span>
-             <span class="console-text">{{ entry.summary }}</span>
-           </div>
-           <pre
-             v-if="expandedEntryKey === `${entry.ts}:${entry.summary}`"
-             class="console-raw"
-           >{{ formatJson(entry.raw) }}</pre>
-         </div>
-       </div>
-       <div class="console-footer">
-         <div class="console-hint">Latest event: {{ summarizeMessage(latestEvent) }}</div>
-         <div class="console-hint">Session: {{ formatInline(latestSnapshot?.session_summary) }}</div>
-       </div>
-     </section>
+        <div class="console-body">
+          <div class="console-highlights">
+            <div
+              class="console-line console-line-interactive console-highlight-line"
+              role="button"
+              tabindex="0"
+              @click="toggleConsoleSection('thinking')"
+              @keydown.enter.prevent="toggleConsoleSection('thinking')"
+              @keydown.space.prevent="toggleConsoleSection('thinking')"
+            >
+              <span class="console-time console-highlight-label">Thinking</span>
+              <span class="console-text">{{ thinkingPreview }}</span>
+            </div>
+            <pre v-if="expandedConsoleSection === 'thinking'" class="console-raw">{{ thinkingBody }}</pre>
+
+            <div
+              class="console-line console-line-interactive console-highlight-line"
+              role="button"
+              tabindex="0"
+              @click="toggleConsoleSection('final')"
+              @keydown.enter.prevent="toggleConsoleSection('final')"
+              @keydown.space.prevent="toggleConsoleSection('final')"
+            >
+              <span class="console-time console-highlight-label">Final</span>
+              <span class="console-text">{{ finalPreview }}</span>
+            </div>
+            <pre v-if="expandedConsoleSection === 'final'" class="console-raw">{{ finalBody }}</pre>
+          </div>
+
+          <div v-if="logEntries.length === 0" class="console-empty">No messages yet.</div>
+          <div v-for="entry in logEntries" :key="entry.id" class="console-entry" :class="`console-entry-${entry.kind}`">
+            <div
+              class="console-line console-line-interactive"
+              role="button"
+              tabindex="0"
+              @click="toggleExpandedEntry(entry)"
+              @keydown.enter.prevent="toggleExpandedEntry(entry)"
+              @keydown.space.prevent="toggleExpandedEntry(entry)"
+            >
+              <span class="console-time">{{ fmtTime(entry.ts) }}</span>
+              <span class="console-text">
+                <span class="console-badge" :class="entry.tone">{{ entry.badge }}</span>
+                {{ entry.text }}
+              </span>
+            </div>
+            <pre
+              v-if="expandedEntryKey === entry.id"
+              class="console-raw"
+            >{{ entry.details ?? formatJson(entry.raw) }}</pre>
+          </div>
+        </div>
+      </section>
   </main>
+
+  <div v-if="isTokenModalOpen" class="modal-backdrop" @click.self="closeTokenModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Pairing token">
+      <div class="modal-title">Pairing token</div>
+      <div class="modal-subtitle">
+        Paste the pairing code from <span class="setup-mono">bunx remotecode auth</span> to connect.
+      </div>
+      <input
+        v-model.trim="tokenDraft"
+        class="input modal-input"
+        placeholder="paste pairing code or viewer token"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="modal-actions">
+        <button class="button" type="button" @click="saveViewerToken" :disabled="!tokenDraft.trim()">
+          Save token
+        </button>
+        <button class="button button-ghost" type="button" @click="closeTokenModal">Cancel</button>
+        <button
+          v-if="hasViewerToken"
+          class="button button-ghost"
+          type="button"
+          @click="clearViewerTokenFromModal"
+        >
+          Clear token
+        </button>
+      </div>
+    </div>
+  </div>
 </template>
