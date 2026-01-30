@@ -395,6 +395,29 @@ const formatDiffDetails = (diffList) => {
   return blocks.length > 0 ? blocks.join('\n\n===\n\n') : '—'
 }
 
+const buildLineDiff = (beforeText, afterText) => {
+  const beforeLines = String(beforeText ?? '').split(/\r?\n/)
+  const afterLines = String(afterText ?? '').split(/\r?\n/)
+  const max = Math.max(beforeLines.length, afterLines.length)
+  const rows = []
+  for (let i = 0; i < max; i += 1) {
+    const left = beforeLines[i]
+    const right = afterLines[i]
+    if (left === right) continue
+    if (left !== undefined && right === undefined) {
+      rows.push({ left, right: '', state: 'removed' })
+      continue
+    }
+    if (left === undefined && right !== undefined) {
+      rows.push({ left: '', right, state: 'added' })
+      continue
+    }
+    rows.push({ left, right: '', state: 'removed' })
+    rows.push({ left: '', right, state: 'added' })
+  }
+  return rows
+}
+
 let nextEntryId = 1
 const buildConsoleEntry = (payload) => {
   const raw = payload
@@ -406,6 +429,7 @@ const buildConsoleEntry = (payload) => {
     tone: 'tone-idle',
     text: summarizeMessage(payload),
     details: null,
+    messageKey: null,
     raw,
   }
 
@@ -444,7 +468,13 @@ const buildConsoleEntry = (payload) => {
       const firstFile = Array.isArray(diffList) && diffList[0]?.file ? diffList[0].file : null
       const count = Array.isArray(diffList) ? diffList.length : 0
       entry.text = firstFile ? `${firstFile}${count > 1 ? ` +${count - 1}` : ''}` : 'session.diff'
-      entry.details = formatDiffDetails(diffList)
+      entry.diffBlocks = Array.isArray(diffList)
+        ? diffList.map((d) => ({
+            file: d?.file ?? 'unknown file',
+            language: d?.language,
+            lines: buildLineDiff(d?.before, d?.after),
+          }))
+        : []
       return entry
     }
 
@@ -470,6 +500,9 @@ const buildConsoleEntry = (payload) => {
       const combined = `${baseText}${deltaText}`.trim()
       entry.text = combined || 'message.part.updated'
       entry.details = formatJson(part ?? payload)
+      if (part?.sessionID && part?.messageID) {
+        entry.messageKey = `${part.sessionID}:${part.messageID}`
+      }
       return entry
     }
 
@@ -786,6 +819,29 @@ const connectViewer = () => {
 
     const entry = buildConsoleEntry(payload)
     if (entry) {
+      if (entry.messageKey) {
+        const existingIndex = logEntries.value.findIndex(
+          (existing) => existing.messageKey === entry.messageKey
+        )
+        if (existingIndex >= 0) {
+          const existing = logEntries.value[existingIndex]
+          const merged = {
+            ...existing,
+            text: entry.text,
+            details: entry.details,
+            ts: entry.ts,
+            raw: entry.raw,
+          }
+          logEntries.value = [
+            merged,
+            ...logEntries.value.slice(0, existingIndex),
+            ...logEntries.value.slice(existingIndex + 1),
+          ]
+          lastMessageAt.value = merged.ts
+          return
+        }
+      }
+
       logEntries.value = [entry, ...logEntries.value].slice(0, 200)
       lastMessageAt.value = entry.ts
     }
@@ -1010,9 +1066,24 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <pre
-              v-if="expandedEntryKey === entry.id"
+              v-if="expandedEntryKey === entry.id && entry.kind !== 'diff'"
               class="console-raw"
             >{{ entry.details ?? formatJson(entry.raw) }}</pre>
+            <div v-if="expandedEntryKey === entry.id && entry.kind === 'diff'" class="diff-blocks">
+              <div v-for="block in entry.diffBlocks" :key="block.file" class="diff-block">
+                <div class="diff-block-title">{{ block.file }}</div>
+                <div class="diff-table">
+                  <div class="diff-row" v-for="(line, idx) in block.lines" :key="idx" :class="`diff-${line.state}`">
+                    <div class="diff-row-left" v-html="line.left || '&nbsp;'" />
+                    <div class="diff-row-right" v-html="line.right || '&nbsp;'" />
+                  </div>
+                  <div v-if="block.lines.length === 0" class="diff-row diff-empty">
+                    <div class="diff-row-left">No changes</div>
+                    <div class="diff-row-right">No changes</div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>

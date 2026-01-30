@@ -149,7 +149,6 @@ describe('Live message console', () => {
     )
 
     await nextTick()
-
     const rows = wrapper.findAll('.console-line')
     const diffRow = rows.find((row) => row.text().includes('DIFF'))
     expect(diffRow).toBeTruthy()
@@ -158,10 +157,51 @@ describe('Live message console', () => {
     await diffRow.trigger('click')
     await nextTick()
 
-    const expanded = wrapper.find('.console-raw')
-    expect(expanded.text()).toContain('apps/frontend/src/App.vue')
-    expect(expanded.text()).toContain('--- before')
-    expect(expanded.text()).toContain('+++ after')
+    const block = wrapper.find('.diff-block')
+    expect(block.exists()).toBe(true)
+    expect(block.text()).toContain('apps/frontend/src/App.vue')
+  })
+
+  it('shows session.diff side-by-side with highlights', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'session.diff',
+        severity: 'info',
+        payload: {
+          sessionID: 'ses_123',
+          diff: [
+            {
+              file: 'apps/frontend/src/App.vue',
+              before: 'same line\nold text',
+              after: 'same line\nnew text',
+              language: 'vue',
+            },
+          ],
+        },
+        ts: '2026-01-30T00:00:01.500Z',
+      })
+    )
+
+    await nextTick()
+
+    const rows = wrapper.findAll('.console-line')
+    const diffRow = rows.find((row) => row.text().includes('DIFF'))
+    expect(diffRow).toBeTruthy()
+    await diffRow.trigger('click')
+    await nextTick()
+
+    const diffLines = wrapper.findAll('.diff-row')
+    expect(diffLines.length).toBe(2) // removed + added
+
+    const removedRow = diffLines.find((row) => row.classes().includes('diff-removed'))
+    const addedRow = diffLines.find((row) => row.classes().includes('diff-added'))
+    expect(removedRow?.find('.diff-row-left').text()).toContain('old text')
+    expect(addedRow?.find('.diff-row-right').text()).toContain('new text')
   })
 
   it('uses session.updated event to update session title', async () => {
@@ -254,5 +294,52 @@ describe('Live message console', () => {
     const consoleBody = wrapper.find('.console-body')
     expect(consoleBody.text()).toContain('MESSAGE')
     expect(consoleBody.text()).toContain('Implemented the live message console the way you described for')
+  })
+
+  it('merges message.part.updated lines by session and message', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_1',
+            sessionID: 'ses_123',
+            messageID: 'msg_123',
+            type: 'text',
+            text: 'PR created: https://',
+          },
+        },
+        ts: '2026-01-30T00:00:06.000Z',
+      })
+    )
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_1',
+            sessionID: 'ses_123',
+            messageID: 'msg_123',
+            type: 'text',
+            text: 'PR created: https://github',
+          },
+        },
+        ts: '2026-01-30T00:00:07.000Z',
+      })
+    )
+
+    await nextTick()
+    const entries = wrapper.findAll('.console-entry')
+    expect(entries.length).toBe(1)
+    expect(entries[0].text()).toContain('PR created: https://github')
   })
 })
