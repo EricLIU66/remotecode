@@ -123,7 +123,7 @@ describe('Live message console', () => {
     expect(consoleBody.text()).toContain('gpt-5.2')
   })
 
-  it('renders session.diff with file diff preview + expandable before/after', async () => {
+  it('renders session.diff preview and exposes the diff trigger', async () => {
     const wrapper = await mountAppWithToken()
     const socket = MockWebSocket.instances[0]
     expect(socket).toBeTruthy()
@@ -161,7 +161,7 @@ describe('Live message console', () => {
     expect(trigger.exists()).toBe(true)
   })
 
-  it('shows session.diff side-by-side with highlights', async () => {
+  it('shows session.diff side-by-side before/after with language class', async () => {
     const wrapper = await mountAppWithToken()
     const socket = MockWebSocket.instances[0]
     expect(socket).toBeTruthy()
@@ -199,10 +199,135 @@ describe('Live message console', () => {
     await trigger.trigger('click')
     await nextTick()
 
-    const left = wrapper.find('.diff-col-left .diff-pre')
-    const right = wrapper.find('.diff-col-right .diff-pre')
+    const block = wrapper.find('.diff-block')
+    expect(block.exists()).toBe(true)
+    expect(block.classes().some((c) => c.startsWith('language-'))).toBe(true)
+
+    const left = block.find('.diff-col-left .diff-pre')
+    const right = block.find('.diff-col-right .diff-pre')
     expect(left.text()).toContain('old text')
     expect(right.text()).toContain('new text')
+  })
+
+  it('renders session.diff preview with all files and line stats', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'session.diff',
+        severity: 'info',
+        payload: {
+          sessionID: 'ses_123',
+          diff: [
+            {
+              file: 'file-a.txt',
+              before: 'a\nb\nc\n',
+              after: 'a\nb\nc\nd\n',
+              language: 'text',
+            },
+            {
+              file: 'file-b.txt',
+              before: 'x\ny\n',
+              after: 'x\nz\n',
+              language: 'text',
+            },
+          ],
+        },
+        ts: '2026-01-30T00:00:01.750Z',
+      })
+    )
+
+    await nextTick()
+
+    const rows = wrapper.findAll('.console-line')
+    const diffRow = rows.find((row) => row.text().includes('DIFF'))
+    expect(diffRow).toBeTruthy()
+    expect(diffRow.text()).toContain('file-a.txt (+1/-0)')
+    expect(diffRow.text()).toContain('file-b.txt (+1/-1)')
+
+    await diffRow.trigger('click')
+    await nextTick()
+
+    const trigger = wrapper.find('.diff-open-trigger')
+    expect(trigger.exists()).toBe(true)
+    await trigger.trigger('click')
+    await nextTick()
+
+    const modal = wrapper.find('.diff-modal')
+    expect(modal.exists()).toBe(true)
+    const blocks = modal.findAll('.diff-block')
+    expect(blocks.length).toBe(1)
+    expect(blocks[0].text()).toContain('file-a.txt')
+    const before = blocks[0].find('.diff-col-left .diff-pre')
+    const after = blocks[0].find('.diff-col-right .diff-pre')
+    expect(before.text()).toContain('a\nb\nc')
+    expect(after.text()).toContain('d')
+  })
+
+  it('renders session.diff files as tabs and switches active diff', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'session.diff',
+        severity: 'info',
+        payload: {
+          sessionID: 'ses_123',
+          diff: [
+            {
+              file: 'file-a.txt',
+              before: 'before-a',
+              after: 'after-a',
+              language: 'text',
+            },
+            {
+              file: 'file-b.txt',
+              before: 'before-b',
+              after: 'after-b',
+              language: 'text',
+            },
+          ],
+        },
+        ts: '2026-01-30T00:00:01.900Z',
+      })
+    )
+
+    await nextTick()
+
+    const rows = wrapper.findAll('.console-line')
+    const diffRow = rows.find((row) => row.text().includes('DIFF'))
+    expect(diffRow).toBeTruthy()
+    await diffRow.trigger('click')
+    await nextTick()
+
+    const trigger = wrapper.find('.diff-open-trigger')
+    await trigger.trigger('click')
+    await nextTick()
+
+    const modal = wrapper.find('.diff-modal')
+    expect(modal.exists()).toBe(true)
+    const tabs = modal.findAll('.diff-tabs button')
+    expect(tabs.length).toBe(2)
+    expect(tabs[0].text()).toContain('file-a.txt')
+    expect(tabs[1].text()).toContain('file-b.txt')
+
+    const beforeText = () => modal.find('.diff-col-left .diff-pre').text()
+    const afterText = () => modal.find('.diff-col-right .diff-pre').text()
+    expect(beforeText()).toContain('before-a')
+    expect(afterText()).toContain('after-a')
+    expect(afterText()).not.toContain('after-b')
+
+    await tabs[1].trigger('click')
+    await nextTick()
+    expect(beforeText()).toContain('before-b')
+    expect(afterText()).toContain('after-b')
+    expect(afterText()).not.toContain('after-a')
   })
 
   it('uses session.updated event to update session title', async () => {

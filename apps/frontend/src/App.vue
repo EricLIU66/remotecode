@@ -40,6 +40,7 @@ const expandedConsoleSection = ref(null)
 const isTokenModalOpen = ref(false)
 const tokenDraft = ref('')
 const activeDiff = ref(null)
+const activeDiffFile = ref(null)
 
 const remotecodeMeta = computed(() => {
   const summary = latestSnapshot.value?.session_summary
@@ -348,6 +349,22 @@ const summarizeEventPayload = (payload) => {
   return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}…` : normalized
 }
 
+const setActiveDiff = (entry) => {
+  activeDiff.value = entry
+  const first = entry?.diffBlocks?.[0]
+  activeDiffFile.value = first?.file ?? null
+}
+
+const activeDiffBlock = computed(() => {
+  const diff = activeDiff.value
+  if (!diff || !Array.isArray(diff.diffBlocks)) return null
+  if (activeDiffFile.value) {
+    const match = diff.diffBlocks.find((b) => b.file === activeDiffFile.value)
+    if (match) return match
+  }
+  return diff.diffBlocks[0] ?? null
+})
+
 const summarizeMessage = (message) => {
   if (!message || typeof message !== 'object') return String(message)
   if (message.type === 'viewer.hello') return `viewer.hello device=${message.device_id || '—'}`
@@ -396,10 +413,110 @@ const formatDiffDetails = (diffList) => {
   return blocks.length > 0 ? blocks.join('\n\n===\n\n') : '—'
 }
 
+const buildUnifiedDiffLines = (beforeText, afterText) => {
+  const before = splitNormalizedLines(beforeText)
+  const after = splitNormalizedLines(afterText)
+  if (before.length === 0 && after.length === 0) return []
+
+  const n = before.length
+  const m = after.length
+  const maxCells = 500_000
+  if (n * m > maxCells) {
+    // Fallback: simple delta-only view to stay responsive on very large inputs.
+    const lines = []
+    for (const line of before) lines.push({ type: 'del', text: line })
+    for (const line of after) lines.push({ type: 'add', text: line })
+    return lines
+  }
+
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
+      if (before[i - 1] === after[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1
+      } else {
+        dp[i][j] = dp[i - 1][j] > dp[i][j - 1] ? dp[i - 1][j] : dp[i][j - 1]
+      }
+    }
+  }
+
+  const lines = []
+  let i = n
+  let j = m
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && before[i - 1] === after[j - 1]) {
+      lines.push({ type: 'context', text: before[i - 1] })
+      i -= 1
+      j -= 1
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      lines.push({ type: 'add', text: after[j - 1] })
+      j -= 1
+    } else if (i > 0) {
+      lines.push({ type: 'del', text: before[i - 1] })
+      i -= 1
+    }
+  }
+
+  lines.reverse()
+  return lines
+}
+
 const buildSideBySideDiff = (beforeText, afterText) => {
   return {
     before: String(beforeText ?? ''),
     after: String(afterText ?? ''),
+  }
+}
+
+const splitNormalizedLines = (value) => {
+  const text = String(value ?? '')
+  if (!text) return []
+  const parts = text.split(/\r?\n/)
+  // Avoid counting a trailing newline as an empty "line".
+  if (parts.length > 0 && parts[parts.length - 1] === '') {
+    parts.pop()
+  }
+  return parts
+}
+
+const lcsLength = (a, b, maxCells = 2_000_000) => {
+  const n = a.length
+  const m = b.length
+  if (n === 0 || m === 0) return 0
+  if (n * m > maxCells) {
+    return null
+  }
+
+  let prev = new Array(m + 1).fill(0)
+  let curr = new Array(m + 1).fill(0)
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
+      if (a[i - 1] === b[j - 1]) {
+        curr[j] = prev[j - 1] + 1
+      } else {
+        curr[j] = prev[j] > curr[j - 1] ? prev[j] : curr[j - 1]
+      }
+    }
+    ;[prev, curr] = [curr, prev]
+    curr.fill(0)
+  }
+
+  return prev[m]
+}
+
+const countLineChanges = (beforeText, afterText) => {
+  const beforeLines = splitNormalizedLines(beforeText)
+  const afterLines = splitNormalizedLines(afterText)
+  const len = lcsLength(beforeLines, afterLines)
+  if (typeof len === 'number') {
+    return { added: afterLines.length - len, removed: beforeLines.length - len }
+  }
+
+  // Fallback for very large inputs: preserve responsiveness with a cheap estimate.
+  const delta = afterLines.length - beforeLines.length
+  return {
+    added: delta > 0 ? delta : 0,
+    removed: delta < 0 ? -delta : 0,
   }
 }
 
@@ -450,13 +567,23 @@ const buildConsoleEntry = (payload) => {
       entry.badge = 'DIFF'
       entry.tone = 'tone-warn'
       const diffList = payload.payload?.diff
-      const firstFile = Array.isArray(diffList) && diffList[0]?.file ? diffList[0].file : null
-      const count = Array.isArray(diffList) ? diffList.length : 0
-      entry.text = firstFile ? `${firstFile}${count > 1 ? ` +${count - 1}` : ''}` : 'session.diff'
+      entry.text = Array.isArray(diffList)
+        ? truncateSingleLine(
+            diffList
+              .map((d) => {
+                const file = d?.file ?? 'unknown file'
+                const { added, removed } = countLineChanges(d?.before, d?.after)
+                return `${file} (+${added}/-${removed})`
+              })
+              .join(', '),
+            160
+          )
+        : 'session.diff'
       entry.diffBlocks = Array.isArray(diffList)
         ? diffList.map((d) => ({
             file: d?.file ?? 'unknown file',
             language: d?.language,
+            lines: buildUnifiedDiffLines(d?.before, d?.after),
             columns: buildSideBySideDiff(d?.before, d?.after),
           }))
         : []
@@ -1059,9 +1186,9 @@ onBeforeUnmount(() => {
               class="diff-open-trigger"
               role="button"
               tabindex="0"
-              @click.stop="activeDiff = entry"
-              @keydown.enter.stop.prevent="activeDiff = entry"
-              @keydown.space.stop.prevent="activeDiff = entry"
+              @click.stop="setActiveDiff(entry)"
+              @keydown.enter.stop.prevent="setActiveDiff(entry)"
+              @keydown.space.stop.prevent="setActiveDiff(entry)"
             >
               View diff details
             </div>
@@ -1109,19 +1236,36 @@ onBeforeUnmount(() => {
     <div class="modal-card diff-modal" role="dialog" aria-modal="true" aria-label="Diff details" tabindex="-1">
       <div class="diff-modal-header">
         <div class="modal-title">Diff</div>
-        <button class="diff-close" type="button" @click="activeDiff = null">Close</button>
+        <button class="diff-close" type="button" @click="activeDiff = null" aria-label="Close diff">×</button>
       </div>
-      <div class="diff-blocks">
-        <div v-for="block in activeDiff.diffBlocks" :key="block.file" class="diff-block">
-          <div class="diff-block-title">{{ block.file }}</div>
+      <div class="diff-tabs" v-if="activeDiff?.diffBlocks?.length">
+        <button
+          v-for="block in activeDiff.diffBlocks"
+          :key="block.file"
+          type="button"
+          class="diff-tab"
+          :class="{ 'diff-tab-active': activeDiffFile === block.file }"
+          @click="activeDiffFile = block.file"
+        >
+          {{ block.file }}
+        </button>
+      </div>
+
+      <div class="diff-blocks" v-if="activeDiffBlock">
+        <div
+          class="diff-block"
+          :class="activeDiffBlock.language ? `language-${activeDiffBlock.language}` : 'language-text'"
+          :data-lang="activeDiffBlock.language || 'text'"
+        >
+          <div class="diff-block-title">{{ activeDiffBlock.file }}</div>
           <div class="diff-columns">
             <div class="diff-col diff-col-left">
               <div class="diff-col-label">Before</div>
-              <pre class="diff-pre">{{ block.columns.before }}</pre>
+              <pre class="diff-pre">{{ activeDiffBlock.columns.before }}</pre>
             </div>
             <div class="diff-col diff-col-right">
               <div class="diff-col-label">After</div>
-              <pre class="diff-pre">{{ block.columns.after }}</pre>
+              <pre class="diff-pre">{{ activeDiffBlock.columns.after }}</pre>
             </div>
           </div>
         </div>
