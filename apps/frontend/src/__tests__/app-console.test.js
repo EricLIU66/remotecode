@@ -157,9 +157,8 @@ describe('Live message console', () => {
     await diffRow.trigger('click')
     await nextTick()
 
-    const block = wrapper.find('.diff-block')
-    expect(block.exists()).toBe(true)
-    expect(block.text()).toContain('apps/frontend/src/App.vue')
+    const trigger = wrapper.find('.diff-open-trigger')
+    expect(trigger.exists()).toBe(true)
   })
 
   it('shows session.diff side-by-side with highlights', async () => {
@@ -193,6 +192,11 @@ describe('Live message console', () => {
     const diffRow = rows.find((row) => row.text().includes('DIFF'))
     expect(diffRow).toBeTruthy()
     await diffRow.trigger('click')
+    await nextTick()
+
+    const trigger = wrapper.find('.diff-open-trigger')
+    expect(trigger.exists()).toBe(true)
+    await trigger.trigger('click')
     await nextTick()
 
     const diffLines = wrapper.findAll('.diff-row')
@@ -341,5 +345,52 @@ describe('Live message console', () => {
     const entries = wrapper.findAll('.console-entry')
     expect(entries.length).toBe(1)
     expect(entries[0].text()).toContain('PR created: https://github')
+  })
+
+  it('opens diff modal and closes it', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'session.diff',
+        severity: 'info',
+        payload: {
+          sessionID: 'ses_123',
+          diff: [
+            {
+              file: 'apps/frontend/src/App.vue',
+              before: 'old text',
+              after: 'new text',
+              language: 'vue',
+            },
+          ],
+        },
+        ts: '2026-01-30T00:00:01.600Z',
+      })
+    )
+
+    await nextTick()
+
+    const rows = wrapper.findAll('.console-line')
+    const diffRow = rows.find((row) => row.text().includes('DIFF'))
+    expect(diffRow).toBeTruthy()
+    await diffRow.trigger('click')
+    await nextTick()
+
+    const trigger = wrapper.find('.diff-open-trigger')
+    await trigger.trigger('click')
+    await nextTick()
+
+    const modal = wrapper.find('.diff-modal')
+    expect(modal.exists()).toBe(true)
+
+    const closeBtn = modal.find('.diff-close')
+    await closeBtn.trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.diff-modal').exists()).toBe(false)
   })
 })

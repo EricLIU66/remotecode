@@ -39,6 +39,7 @@ const expandedEntryKey = ref(null)
 const expandedConsoleSection = ref(null)
 const isTokenModalOpen = ref(false)
 const tokenDraft = ref('')
+const activeDiff = ref(null)
 
 const remotecodeMeta = computed(() => {
   const summary = latestSnapshot.value?.session_summary
@@ -1069,21 +1070,22 @@ onBeforeUnmount(() => {
               v-if="expandedEntryKey === entry.id && entry.kind !== 'diff'"
               class="console-raw"
             >{{ entry.details ?? formatJson(entry.raw) }}</pre>
-            <div v-if="expandedEntryKey === entry.id && entry.kind === 'diff'" class="diff-blocks">
-              <div v-for="block in entry.diffBlocks" :key="block.file" class="diff-block">
-                <div class="diff-block-title">{{ block.file }}</div>
-                <div class="diff-table">
-                  <div class="diff-row" v-for="(line, idx) in block.lines" :key="idx" :class="`diff-${line.state}`">
-                    <div class="diff-row-left" v-html="line.left || '&nbsp;'" />
-                    <div class="diff-row-right" v-html="line.right || '&nbsp;'" />
-                  </div>
-                  <div v-if="block.lines.length === 0" class="diff-row diff-empty">
-                    <div class="diff-row-left">No changes</div>
-                    <div class="diff-row-right">No changes</div>
-                  </div>
-                </div>
-              </div>
+            <div
+              v-if="expandedEntryKey === entry.id && entry.kind === 'diff'"
+              class="diff-open-trigger"
+              role="button"
+              tabindex="0"
+              @click.stop="activeDiff = entry"
+              @keydown.enter.stop.prevent="activeDiff = entry"
+              @keydown.space.stop.prevent="activeDiff = entry"
+            >
+              View diff details
             </div>
+            <div
+              v-if="activeDiff?.id === entry.id && entry.kind === 'diff'"
+              class="sr-only"
+              aria-live="polite"
+            >Diff modal open</div>
           </div>
         </div>
       </section>
@@ -1115,6 +1117,30 @@ onBeforeUnmount(() => {
         >
           Clear token
         </button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="activeDiff" class="modal-backdrop" @click.self="activeDiff = null">
+    <div class="modal-card diff-modal" role="dialog" aria-modal="true" aria-label="Diff details">
+      <div class="diff-modal-header">
+        <div class="modal-title">Diff</div>
+        <button class="diff-close" type="button" @click="activeDiff = null">Close</button>
+      </div>
+      <div class="diff-blocks">
+        <div v-for="block in activeDiff.diffBlocks" :key="block.file" class="diff-block">
+          <div class="diff-block-title">{{ block.file }}</div>
+          <div class="diff-table">
+            <div class="diff-row" v-for="(line, idx) in block.lines" :key="idx" :class="`diff-${line.state}`">
+              <div class="diff-row-left" v-html="line.left || '&nbsp;'" />
+              <div class="diff-row-right" v-html="line.right || '&nbsp;'" />
+            </div>
+            <div v-if="block.lines.length === 0" class="diff-row diff-empty">
+              <div class="diff-row-left">No changes</div>
+              <div class="diff-row-right">No changes</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
