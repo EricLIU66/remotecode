@@ -59,6 +59,32 @@ body {
   margin-bottom: 18px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-button {
+  border: 1px solid rgba(24, 33, 44, 0.18);
+  background: radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.9), rgba(230, 236, 242, 0.5));
+  border-radius: 999px;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 22px rgba(15, 20, 30, 0.15);
+  cursor: pointer;
+}
+
+.profile-label {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: rgba(30, 35, 41, 0.68);
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -193,6 +219,12 @@ body {
 .button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
+}
+
+.button-ghost {
+  background: transparent;
+  border-color: rgba(24, 33, 44, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
 }
 
 .console {
@@ -415,6 +447,25 @@ body {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
+.console-highlights {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.console-highlight-line {
+  padding: 8px 0;
+}
+
+.console-highlight-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+  color: rgba(233, 237, 242, 0.72);
+}
+
 .console-line {
   display: grid;
   grid-template-columns: 160px 1fr;
@@ -459,22 +510,44 @@ body {
   color: var(--console-ink);
 }
 
+.console-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(233, 237, 242, 0.16);
+  background: rgba(233, 237, 242, 0.08);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-right: 10px;
+}
+
+.console-badge.tone-online {
+  border-color: rgba(15, 118, 110, 0.55);
+  background: rgba(15, 118, 110, 0.18);
+}
+
+.console-badge.tone-warn {
+  border-color: rgba(161, 98, 7, 0.55);
+  background: rgba(161, 98, 7, 0.18);
+}
+
+.console-badge.tone-idle {
+  border-color: rgba(90, 126, 205, 0.55);
+  background: rgba(90, 126, 205, 0.16);
+}
+
+.console-badge.tone-offline {
+  border-color: rgba(180, 35, 24, 0.55);
+  background: rgba(180, 35, 24, 0.16);
+}
+
 .console-empty {
   color: var(--console-muted);
   padding: 8px 0;
-}
-
-.console-footer {
-  display: grid;
-  gap: 6px;
-  margin-top: 12px;
-  color: var(--console-muted);
-  font-size: 13px;
-}
-
-.console-hint {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
-    monospace;
 }
 
 .hint {
@@ -496,6 +569,10 @@ body {
   letter-spacing: 0.01em;
 }
 
+.setup-note .button {
+  margin-top: 10px;
+}
+
 .setup-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
     monospace;
@@ -512,6 +589,47 @@ body {
 
 .hint-error {
   color: rgba(180, 35, 24, 0.85);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 10, 14, 0.55);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  z-index: 50;
+}
+
+.modal-card {
+  width: min(460px, 94vw);
+  border-radius: 18px;
+  border: 1px solid rgba(24, 33, 44, 0.18);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.95), rgba(244, 247, 250, 0.88));
+  padding: 20px;
+  box-shadow: 0 30px 70px rgba(10, 16, 24, 0.28);
+}
+
+.modal-title {
+  font-size: 18px;
+  letter-spacing: -0.01em;
+}
+
+.modal-subtitle {
+  margin-top: 6px;
+  color: rgba(30, 35, 41, 0.68);
+  font-size: 13px;
+}
+
+.modal-input {
+  margin-top: 14px;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
 }
 
 .pulse {
