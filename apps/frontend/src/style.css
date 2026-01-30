@@ -580,45 +580,38 @@ body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.diff-table {
+.diff-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.diff-col {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-col-label {
+  padding: 6px 10px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.diff-pre {
+  margin: 0;
+  padding: 10px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 12px;
-}
-
-.diff-row {
-  display: contents;
-}
-
-.diff-row-left,
-.diff-row-right {
-  padding: 6px 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.diff-row-left {
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.diff-row.diff-removed .diff-row-left {
-  background: rgba(180, 35, 24, 0.16);
-}
-
-.diff-row.diff-added .diff-row-right {
-  background: rgba(15, 118, 110, 0.18);
-}
-
-.diff-row.diff-changed .diff-row-left,
-.diff-row.diff-changed .diff-row-right {
-  background: rgba(234, 179, 8, 0.14);
-}
-
-.diff-row.diff-empty .diff-row-left,
-.diff-row.diff-empty .diff-row-right {
-  background: rgba(255, 255, 255, 0.04);
 }
 
 .console-empty {

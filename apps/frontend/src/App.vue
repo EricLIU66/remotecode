@@ -396,27 +396,11 @@ const formatDiffDetails = (diffList) => {
   return blocks.length > 0 ? blocks.join('\n\n===\n\n') : '—'
 }
 
-const buildLineDiff = (beforeText, afterText) => {
-  const beforeLines = String(beforeText ?? '').split(/\r?\n/)
-  const afterLines = String(afterText ?? '').split(/\r?\n/)
-  const max = Math.max(beforeLines.length, afterLines.length)
-  const rows = []
-  for (let i = 0; i < max; i += 1) {
-    const left = beforeLines[i]
-    const right = afterLines[i]
-    if (left === right) continue
-    if (left !== undefined && right === undefined) {
-      rows.push({ left, right: '', state: 'removed' })
-      continue
-    }
-    if (left === undefined && right !== undefined) {
-      rows.push({ left: '', right, state: 'added' })
-      continue
-    }
-    rows.push({ left, right: '', state: 'removed' })
-    rows.push({ left: '', right, state: 'added' })
+const buildSideBySideDiff = (beforeText, afterText) => {
+  return {
+    before: String(beforeText ?? ''),
+    after: String(afterText ?? ''),
   }
-  return rows
 }
 
 let nextEntryId = 1
@@ -473,7 +457,7 @@ const buildConsoleEntry = (payload) => {
         ? diffList.map((d) => ({
             file: d?.file ?? 'unknown file',
             language: d?.language,
-            lines: buildLineDiff(d?.before, d?.after),
+            columns: buildSideBySideDiff(d?.before, d?.after),
           }))
         : []
       return entry
@@ -1130,14 +1114,14 @@ onBeforeUnmount(() => {
       <div class="diff-blocks">
         <div v-for="block in activeDiff.diffBlocks" :key="block.file" class="diff-block">
           <div class="diff-block-title">{{ block.file }}</div>
-          <div class="diff-table">
-            <div class="diff-row" v-for="(line, idx) in block.lines" :key="idx" :class="`diff-${line.state}`">
-              <div class="diff-row-left" v-html="line.left || '&nbsp;'" />
-              <div class="diff-row-right" v-html="line.right || '&nbsp;'" />
+          <div class="diff-columns">
+            <div class="diff-col diff-col-left">
+              <div class="diff-col-label">Before</div>
+              <pre class="diff-pre">{{ block.columns.before }}</pre>
             </div>
-            <div v-if="block.lines.length === 0" class="diff-row diff-empty">
-              <div class="diff-row-left">No changes</div>
-              <div class="diff-row-right">No changes</div>
+            <div class="diff-col diff-col-right">
+              <div class="diff-col-label">After</div>
+              <pre class="diff-pre">{{ block.columns.after }}</pre>
             </div>
           </div>
         </div>

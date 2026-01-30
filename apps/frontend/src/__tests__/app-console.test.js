@@ -199,13 +199,10 @@ describe('Live message console', () => {
     await trigger.trigger('click')
     await nextTick()
 
-    const diffLines = wrapper.findAll('.diff-row')
-    expect(diffLines.length).toBe(2) // removed + added
-
-    const removedRow = diffLines.find((row) => row.classes().includes('diff-removed'))
-    const addedRow = diffLines.find((row) => row.classes().includes('diff-added'))
-    expect(removedRow?.find('.diff-row-left').text()).toContain('old text')
-    expect(addedRow?.find('.diff-row-right').text()).toContain('new text')
+    const left = wrapper.find('.diff-col-left .diff-pre')
+    const right = wrapper.find('.diff-col-right .diff-pre')
+    expect(left.text()).toContain('old text')
+    expect(right.text()).toContain('new text')
   })
 
   it('uses session.updated event to update session title', async () => {
