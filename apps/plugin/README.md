@@ -18,6 +18,8 @@ Pair a phone (writes device credentials to `.opencode/remotecode.json`):
 bunx remotecode auth
 ```
 
+In an interactive terminal, use the arrow keys and Enter to pick between QR pairing and a temporary code.
+
 This provisions:
 - `.opencode/plugins/remotecode.js` (the OpenCode plugin entrypoint)
 - `.opencode/package.json` (plugin dependencies)
