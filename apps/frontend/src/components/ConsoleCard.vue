@@ -1,5 +1,49 @@
 <script setup>
-import { onBeforeUnmount, ref } from 'vue'
+import MarkdownIt from 'markdown-it'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
+const markdown = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: true,
+})
+
+const renderMarkdown = (value) => {
+  const text = String(value ?? '')
+  if (!text) return ''
+
+  // Keep rendering inline to preserve the console layout, but still respect
+  // newline boundaries when the stream emits multi-line updates.
+  return text
+    .split('\n')
+    .map((line) => markdown.renderInline(line))
+    .join('<br />')
+}
+
+const consoleBodyRef = ref(null)
+const isPinnedToBottom = ref(true)
+
+const updatePinnedToBottom = () => {
+  const el = consoleBodyRef.value
+  if (!el) return
+
+  const scrollTop = typeof el.scrollTop === 'number' ? el.scrollTop : 0
+  const scrollHeight = typeof el.scrollHeight === 'number' ? el.scrollHeight : 0
+  const clientHeight = typeof el.clientHeight === 'number' ? el.clientHeight : 0
+
+  // Keep a small threshold so we still treat "near bottom" as bottom.
+  const threshold = 8
+  isPinnedToBottom.value = scrollTop + clientHeight >= scrollHeight - threshold
+}
+
+const scrollConsoleToBottom = async () => {
+  await nextTick()
+  const el = consoleBodyRef.value
+  if (!el) return
+  if (typeof el.scrollHeight !== 'number') return
+  el.scrollTop = el.scrollHeight
+  isPinnedToBottom.value = true
+}
 
 const copiedEntryKey = ref(null)
 let copyResetTimer = null
@@ -112,6 +156,23 @@ const props = defineProps({
   },
 })
 
+onMounted(() => {
+  void scrollConsoleToBottom()
+})
+
+watch(
+  () => props.logEntries,
+  () => {
+    if (!isPinnedToBottom.value) return
+    void scrollConsoleToBottom()
+  },
+  { deep: false }
+)
+
+const onConsoleScroll = () => {
+  updatePinnedToBottom()
+}
+
 const onToggleConsoleSection = (key) => {
   if (typeof props.toggleConsoleSection === 'function') {
     props.toggleConsoleSection(key)
@@ -164,7 +225,7 @@ const onCopyEntryJson = (entry) => {
       </div>
       <div class="console-chip" :class="wsStatusTone">{{ wsStatusLabel }}</div>
     </div>
-    <div class="console-body">
+    <div ref="consoleBodyRef" class="console-body" @scroll="onConsoleScroll">
       <div v-if="logEntries.length === 0" class="console-empty">No messages yet.</div>
       <div v-for="entry in logEntries" :key="entry.id" class="console-entry" :class="`console-entry-${entry.kind}`">
         <div
@@ -175,14 +236,21 @@ const onCopyEntryJson = (entry) => {
           @keydown.enter.prevent="onToggleExpandedEntry(entry)"
           @keydown.space.prevent="onToggleExpandedEntry(entry)"
         >
-          <span class="console-time">{{ fmtTime(entry.ts) }}</span>
           <span class="console-text">
             <span class="console-badge" :class="entry.tone">{{ entry.badge }}</span>
-            {{ entry.text }}
+            <span
+              v-if="entry.kind === 'message' || entry.kind === 'thinking'"
+              class="console-markdown"
+              v-html="renderMarkdown(entry.text)"
+            ></span>
+            <span v-else>{{ entry.text }}</span>
           </span>
         </div>
-        <div v-if="expandedEntryKey === entry.id && entry.kind !== 'diff'" class="console-expanded">
-          <pre class="console-raw">{{ entry.details ?? formatJson(entry.raw) }}</pre>
+        <div
+          v-if="expandedEntryKey === entry.id && entry.kind !== 'diff' && (debugMode || entry.details)"
+          class="console-expanded"
+        >
+          <pre v-if="entry.details" class="console-raw">{{ entry.details }}</pre>
 
           <div v-if="debugMode" class="console-expanded-head">
             <div class="console-expanded-label">Raw JSON</div>

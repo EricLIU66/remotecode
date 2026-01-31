@@ -69,9 +69,12 @@ const stubFetchOk = () => {
   })
 }
 
-const mountAppWithToken = async () => {
+const mountAppWithToken = async (options = {}) => {
   window.localStorage.setItem('remotecode.relay_url', 'http://localhost:8787')
   window.localStorage.setItem('remotecode.viewer_token', 'viewer-token')
+  if (options.hideDiff) {
+    window.localStorage.setItem('remotecode.hide_diff', 'true')
+  }
 
   const wrapper = mount(App)
   await nextTick()
@@ -234,6 +237,35 @@ describe('Live message console', () => {
 
     const trigger = wrapper.find('.diff-open-trigger')
     expect(trigger.exists()).toBe(true)
+  })
+
+  it('does not render session.diff entries when Hide diffs is enabled', async () => {
+    const wrapper = await mountAppWithToken({ hideDiff: true })
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'session.diff',
+        severity: 'info',
+        payload: {
+          diff: [
+            {
+              file: 'apps/frontend/src/style.css',
+              language: 'css',
+              before: 'a',
+              after: 'b',
+            },
+          ],
+        },
+        ts: '2026-01-31T04:21:02.000Z',
+      })
+    )
+
+    await nextTick()
+    expect(wrapper.findAll('.console-entry').length).toBe(0)
+    expect(wrapper.text()).not.toContain('DIFF')
   })
 
   it('shows session.diff side-by-side when only one line changes', async () => {
@@ -443,6 +475,123 @@ describe('Live message console', () => {
     expect(wrapper.findAll('.console-entry').length).toBe(0)
   })
 
+  it('renders newest live relay messages at the bottom and omits timestamps', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_a',
+            sessionID: 'ses_123',
+            messageID: 'msg_a',
+            type: 'text',
+            text: 'First',
+          },
+        },
+        ts: '2026-01-30T00:00:05.000Z',
+      })
+    )
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_b',
+            sessionID: 'ses_123',
+            messageID: 'msg_b',
+            type: 'text',
+            text: 'Second',
+          },
+        },
+        ts: '2026-01-30T00:00:06.000Z',
+      })
+    )
+
+    await nextTick()
+
+    const entries = wrapper.findAll('.console-entry')
+    expect(entries.length).toBe(2)
+    expect(entries[0].text()).toContain('First')
+    expect(entries[1].text()).toContain('Second')
+    expect(wrapper.find('.console-time').exists()).toBe(false)
+  })
+
+  it('keeps auto-scrolling only when already at the bottom', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    await nextTick()
+    const body = wrapper.find('.console-body')
+    expect(body.exists()).toBe(true)
+
+    Object.defineProperty(body.element, 'scrollHeight', {
+      configurable: true,
+      get: () => 1000,
+    })
+    Object.defineProperty(body.element, 'clientHeight', {
+      configurable: true,
+      get: () => 200,
+    })
+    body.element.scrollTop = 800
+    await body.trigger('scroll')
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_scroll_1',
+            sessionID: 'ses_123',
+            messageID: 'msg_scroll_1',
+            type: 'text',
+            text: 'Hello',
+          },
+        },
+        ts: '2026-01-30T00:00:05.000Z',
+      })
+    )
+
+    await nextTick()
+    await nextTick()
+    expect(body.element.scrollTop).toBe(1000)
+
+    body.element.scrollTop = 0
+    await body.trigger('scroll')
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_scroll_2',
+            sessionID: 'ses_123',
+            messageID: 'msg_scroll_2',
+            type: 'text',
+            text: 'World',
+          },
+        },
+        ts: '2026-01-30T00:00:06.000Z',
+      })
+    )
+
+    await nextTick()
+    await nextTick()
+    expect(body.element.scrollTop).toBe(0)
+  })
+
   it('uses session.status event to update status label', async () => {
     const wrapper = await mountAppWithToken()
     const socket = MockWebSocket.instances[0]
@@ -522,7 +671,72 @@ describe('Live message console', () => {
     await nextTick()
     const consoleBody = wrapper.find('.console-body')
     expect(consoleBody.text()).toContain('MESSAGE')
-    expect(consoleBody.text()).toContain('Implemented the live message console the way you described for')
+    expect(consoleBody.text()).toContain('Implemented the live message console the way you described')
+    expect(consoleBody.text()).not.toContain('described for')
+  })
+
+  it('renders live message text as markdown', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_9',
+            sessionID: 'ses_123',
+            messageID: 'msg_999',
+            type: 'text',
+            text: '**Bold** and `code`',
+          },
+        },
+        ts: '2026-01-30T00:00:05.100Z',
+      })
+    )
+
+    await nextTick()
+    const entry = wrapper.findAll('.console-entry')[0]
+    expect(entry.exists()).toBe(true)
+    expect(entry.html()).toContain('<strong>Bold</strong>')
+    expect(entry.html()).toContain('<code>code</code>')
+  })
+
+  it('renders reasoning message.part.updated as THINKING (no prefix) and does not show event_type placeholder', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_reason',
+            sessionID: 'ses_123',
+            messageID: 'msg_reason',
+            type: 'reasoning',
+            text: '**Updating CSS for todo items**\n\nI need to adjust the CSS xxx',
+          },
+          delta: '.',
+        },
+        ts: '2026-01-31T05:50:42.715Z',
+      })
+    )
+
+    await nextTick()
+    const entry = wrapper.findAll('.console-entry')[0]
+    expect(entry.text()).toContain('THINKING')
+    expect(entry.text()).toContain('Updating CSS for todo items')
+    expect(entry.text()).not.toContain('Thinking:')
+    expect(entry.text()).toContain('I need to adjust the CSS xxx')
+    expect(entry.text()).not.toContain('CSS xxx.')
+    expect(entry.text()).not.toContain('message.part.updated')
   })
 
   it('merges message.part.updated lines by session and message', async () => {
@@ -570,6 +784,75 @@ describe('Live message console', () => {
     const entries = wrapper.findAll('.console-entry')
     expect(entries.length).toBe(1)
     expect(entries[0].text()).toContain('PR created: https://github')
+  })
+
+  it('does not append message.part.updated delta and keeps last non-empty text', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_1',
+            sessionID: 'ses_123',
+            messageID: 'msg_123',
+            type: 'text',
+            text: 'Hello',
+          },
+          delta: 'Hello',
+        },
+        ts: '2026-01-30T00:00:07.500Z',
+      })
+    )
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_1',
+            sessionID: 'ses_123',
+            messageID: 'msg_123',
+            type: 'text',
+            text: 'Hello',
+          },
+          delta: ' world',
+        },
+        ts: '2026-01-30T00:00:07.600Z',
+      })
+    )
+
+    // Some streams send an empty final update. This should not clear the running text.
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'message.part.updated',
+        severity: 'info',
+        payload: {
+          part: {
+            id: 'prt_1',
+            sessionID: 'ses_123',
+            messageID: 'msg_123',
+            type: 'text',
+            text: '',
+          },
+        },
+        ts: '2026-01-30T00:00:07.700Z',
+      })
+    )
+
+    await nextTick()
+    const entries = wrapper.findAll('.console-entry')
+    expect(entries.length).toBe(1)
+    expect(entries[0].text()).toContain('Hello')
+    expect(entries[0].text()).not.toContain('Hello world')
   })
 
   it('keeps final message after message.completed', async () => {
@@ -711,6 +994,73 @@ describe('Live message console', () => {
     expect(text).toContain('todo.updated')
   })
 
+  it('hides tool.execute.before todowrite unless debug mode is enabled', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'tool.execute.before',
+        severity: 'info',
+        payload: {
+          tool: 'todowrite',
+          args: {
+            todos: [
+              {
+                id: '1',
+                content: 'todo a',
+                status: 'completed',
+                priority: 'high',
+              },
+            ],
+          },
+        },
+        ts: '2026-01-31T09:40:22.520Z',
+      })
+    )
+
+    await nextTick()
+    expect(wrapper.findAll('.console-entry').length).toBe(0)
+
+    // Flip on debug mode through settings modal (gear)
+    await wrapper.find('.profile-button').trigger('click')
+    await nextTick()
+    const debugToggle = wrapper.find('input.modal-toggle-input')
+    expect(debugToggle.exists()).toBe(true)
+    await debugToggle.setValue(true)
+    await nextTick()
+    await wrapper.find('.modal-actions button.button').trigger('click')
+    await nextTick()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'tool.execute.before',
+        severity: 'info',
+        payload: {
+          tool: 'todowrite',
+          args: {
+            todos: [
+              {
+                id: '1',
+                content: 'todo a',
+                status: 'completed',
+                priority: 'high',
+              },
+            ],
+          },
+        },
+        ts: '2026-01-31T09:40:23.520Z',
+      })
+    )
+
+    await nextTick()
+    expect(wrapper.findAll('.console-entry').length).toBe(1)
+    expect(wrapper.text()).toContain('⚙ todowrite')
+  })
+
   it('stops showing debug-only events after turning debug mode off', async () => {
     window.localStorage.setItem('remotecode.debug_mode', 'true')
     const wrapper = await mountAppWithToken()
@@ -782,7 +1132,126 @@ describe('Live message console', () => {
     expect(wrapper.find('.console-raw').text()).toContain('vitest run')
   })
 
-  it('renders tool.execute.before with description and command details', async () => {
+  it('formats tool.execute.after lsp_diagnostics as a compact TOOL line and hides raw details unless debug mode', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'tool.execute.after',
+        severity: 'info',
+        payload: {
+          tool: 'lsp_diagnostics',
+          title: '',
+          metadata: { truncated: false },
+          output: 'No diagnostics found',
+          output_truncated: false,
+        },
+        ts: '2026-01-31T09:56:36.756Z',
+      })
+    )
+
+    await nextTick()
+    const consoleBody = wrapper.find('.console-body')
+    expect(consoleBody.text()).toContain('TOOL')
+    expect(consoleBody.text()).toContain('⚙ lsp_diagnostics [No diagnostics found]')
+    expect(consoleBody.text()).not.toContain('tool.execute.after')
+
+    const row = wrapper.findAll('.console-line').find((line) => line.text().includes('lsp_diagnostics'))
+    expect(row).toBeTruthy()
+    await row.trigger('click')
+    await nextTick()
+    // Non-debug: we should not show raw output.
+    expect(wrapper.find('.console-raw').exists()).toBe(false)
+
+    await wrapper.find('.profile-button').trigger('click')
+    await nextTick()
+    const debugToggle = wrapper.find('input.modal-toggle-input')
+    await debugToggle.setValue(true)
+    await nextTick()
+    await wrapper.find('.modal-actions button.button').trigger('click')
+    await nextTick()
+
+    // With debug on, the same event should expose raw JSON.
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'tool.execute.after',
+        severity: 'info',
+        payload: {
+          tool: 'lsp_diagnostics',
+          title: '',
+          metadata: { truncated: false },
+          output: 'No diagnostics found',
+          output_truncated: false,
+        },
+        ts: '2026-01-31T09:56:37.756Z',
+      })
+    )
+
+    await nextTick()
+    const lastRow = wrapper.findAll('.console-line').at(-1)
+    await lastRow.trigger('click')
+    await nextTick()
+    expect(wrapper.find('.console-raw').exists()).toBe(true)
+    expect(wrapper.find('.console-raw').text()).toContain('lsp_diagnostics')
+  })
+
+  it('hides tool.execute.after todowrite unless debug mode is enabled', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'tool.execute.after',
+        severity: 'info',
+        payload: {
+          tool: 'todowrite',
+          title: 'Update todo list',
+          metadata: { exit: 0 },
+          output: '',
+        },
+        ts: '2026-01-31T09:41:20.802Z',
+      })
+    )
+
+    await nextTick()
+    expect(wrapper.findAll('.console-entry').length).toBe(0)
+
+    await wrapper.find('.profile-button').trigger('click')
+    await nextTick()
+    const debugToggle = wrapper.find('input.modal-toggle-input')
+    await debugToggle.setValue(true)
+    await nextTick()
+    await wrapper.find('.modal-actions button.button').trigger('click')
+    await nextTick()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'tool.execute.after',
+        severity: 'info',
+        payload: {
+          tool: 'todowrite',
+          title: 'Update todo list',
+          metadata: { exit: 0 },
+          output: '',
+        },
+        ts: '2026-01-31T09:41:21.802Z',
+      })
+    )
+
+    await nextTick()
+    expect(wrapper.findAll('.console-entry').length).toBe(1)
+    expect(wrapper.text()).toContain('TOOL')
+    expect(wrapper.text()).toContain('Update todo list')
+  })
+
+  it('formats tool.execute.before with tool + args (no event_type prefix)', async () => {
     const wrapper = await mountAppWithToken()
     const socket = MockWebSocket.instances[0]
     expect(socket).toBeTruthy()
@@ -793,13 +1262,13 @@ describe('Live message console', () => {
         event_type: 'tool.execute.before',
         severity: 'info',
         payload: {
-          tool: 'bash',
+          tool: 'lsp_diagnostics',
           args: {
-            command: 'npm --prefix apps/frontend run build',
-            description: 'Builds frontend with Vite',
+            filePath: '/Users/jinjial/Desktop/AI2/remotecode/apps/frontend/src/App.vue',
+            severity: 'all',
           },
         },
-        ts: '2026-01-31T04:21:18.162Z',
+        ts: '2026-01-31T09:17:55.550Z',
       })
     )
 
@@ -807,16 +1276,64 @@ describe('Live message console', () => {
 
     const consoleBody = wrapper.find('.console-body')
     expect(consoleBody.text()).toContain('TOOL')
-    expect(consoleBody.text()).toContain('Builds frontend with Vite')
+    expect(consoleBody.text()).toContain('⚙ lsp_diagnostics')
+    expect(consoleBody.text()).toContain('filePath=apps/frontend/src/App.vue')
+    expect(consoleBody.text()).toContain('severity=all')
+    expect(consoleBody.text()).not.toContain('tool.execute.before')
 
-    const rows = wrapper.findAll('.console-line')
-    const toolRow = rows.find((row) => row.text().includes('Builds frontend with Vite'))
-    expect(toolRow).toBeTruthy()
-    await toolRow.trigger('click')
+    const row = wrapper.findAll('.console-line').find((line) => line.text().includes('lsp_diagnostics'))
+    expect(row).toBeTruthy()
+    await row.trigger('click')
     await nextTick()
-    const raw = wrapper.find('.console-raw').text()
-    expect(raw).toContain('bash')
-    expect(raw).toContain('npm --prefix apps/frontend run build')
+    // Non-debug: tool.execute.before should not show details.
+    expect(wrapper.find('.console-raw').exists()).toBe(false)
+
+    // Collapse so we can re-open after enabling debug.
+    await row.trigger('click')
+    await nextTick()
+
+    await wrapper.find('.profile-button').trigger('click')
+    await nextTick()
+    const debugToggle = wrapper.find('input.modal-toggle-input')
+    await debugToggle.setValue(true)
+    await nextTick()
+    await wrapper.find('.modal-actions button.button').trigger('click')
+    await nextTick()
+
+    // Debug: raw JSON should show.
+    await row.trigger('click')
+    await nextTick()
+    expect(wrapper.find('.console-raw').exists()).toBe(true)
+    expect(wrapper.find('.console-raw').text()).toContain('lsp_diagnostics')
+  })
+
+  it('formats tool.execute.before grep command with pattern + path summary', async () => {
+    const wrapper = await mountAppWithToken()
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeTruthy()
+
+    socket.emitMessage(
+      JSON.stringify({
+        type: 'event.append',
+        event_type: 'tool.execute.before',
+        severity: 'info',
+        payload: {
+          tool: 'grep',
+          args: {
+            pattern: '\\.footer\\b',
+            path: '/Users/jinjial/Desktop/AI2/remotecode/apps/frontend/src/style.css',
+          },
+        },
+        ts: '2026-01-31T09:20:37.865Z',
+      })
+    )
+
+    await nextTick()
+
+    const consoleBody = wrapper.find('.console-body')
+    expect(consoleBody.text()).toContain('TOOL')
+    expect(consoleBody.text()).toContain('✱ Grep "\\.footer\\b" in apps/frontend/src/style.css')
+    expect(consoleBody.text()).not.toContain('tool.execute.before')
   })
 
   it('uses todo.updated to update todos panel (not console)', async () => {
@@ -927,6 +1444,11 @@ describe('Live message console', () => {
       props: {
         open: true,
         hasViewerToken: true,
+        deviceId: 'device-1',
+        relayUrl: 'http://localhost:8787',
+        'onUpdate:relayUrl': () => {},
+        hideDiff: false,
+        'onUpdate:hideDiff': () => {},
         draft: 'token',
         'onUpdate:draft': () => {},
         debugMode: false,
@@ -935,6 +1457,9 @@ describe('Live message console', () => {
     })
 
     expect(wrapper.find('.modal-card').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Relay URL')
+    expect(wrapper.text()).toContain('Device ID')
+    expect(wrapper.text()).toContain('Hide diffs')
     expect(wrapper.text()).toContain('Debug mode')
     await wrapper.find('button.button').trigger('click')
     expect(wrapper.emitted('save')).toBeTruthy()

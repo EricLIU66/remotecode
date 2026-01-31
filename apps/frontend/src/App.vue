@@ -7,7 +7,23 @@ import ConsoleCard from './components/ConsoleCard.vue'
 
 const DiffModal = defineAsyncComponent(() => import('./components/DiffModal.vue'))
 
-const defaultRelayUrl = import.meta.env.VITE_RELAY_URL || 'http://localhost:8787'
+const computeDefaultRelayUrl = () => {
+  const override = import.meta.env.VITE_RELAY_URL
+  if (override) return override
+
+  try {
+    const base = new URL(window.location.href)
+    base.port = '8787'
+    base.pathname = ''
+    base.search = ''
+    base.hash = ''
+    return base.toString().replace(/\/$/, '')
+  } catch {
+    return 'http://localhost:8787'
+  }
+}
+
+const defaultRelayUrl = computeDefaultRelayUrl()
 const storageKey = 'remotecode.relay_url'
 
 const loadRelayUrl = () => {
@@ -30,6 +46,13 @@ const loadDebugMode = () => {
   return stored === 'true'
 }
 const debugMode = ref(loadDebugMode())
+
+const hideDiffKey = 'remotecode.hide_diff'
+const loadHideDiff = () => {
+  const stored = window.localStorage.getItem(hideDiffKey)
+  return stored === 'true'
+}
+const hideDiff = ref(loadHideDiff())
 const isExchanging = ref(false)
 const exchangeError = ref(null)
 const isChecking = ref(false)
@@ -583,6 +606,40 @@ const countLineChanges = (beforeText, afterText) => {
   }
 }
 
+const shortenWorkspacePath = (value) => {
+  const raw = String(value ?? '')
+  if (!raw) return ''
+  const marker = '/apps/'
+  const idx = raw.lastIndexOf(marker)
+  if (idx >= 0) {
+    return raw.slice(idx + 1)
+  }
+  return raw
+}
+
+const formatToolArgValue = (key, value) => {
+  if (typeof value !== 'string') return value
+  if (key.toLowerCase().includes('path')) {
+    return shortenWorkspacePath(value)
+  }
+  return value
+}
+
+const formatToolArgsInline = (args) => {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return ''
+  const keys = Object.keys(args).sort()
+  const parts = []
+  for (const key of keys) {
+    const rawValue = args[key]
+    const value = formatToolArgValue(key, rawValue)
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      parts.push(`${key}=${value}`)
+    }
+  }
+  if (parts.length === 0) return ''
+  return `[${parts.join(', ')}]`
+}
+
 let nextEntryId = 1
 const buildConsoleEntry = (payload) => {
   const raw = payload
@@ -638,6 +695,7 @@ const buildConsoleEntry = (payload) => {
     }
 
     if (eventType === 'session.diff') {
+      if (hideDiff.value) return null
       entry.kind = 'diff'
       entry.badge = 'DIFF'
       entry.tone = 'tone-warn'
@@ -674,19 +732,24 @@ const buildConsoleEntry = (payload) => {
       eventType === 'message.part.completed' ||
       eventType === 'message.completed'
     ) {
-      entry.kind = 'message'
-      entry.badge = 'MESSAGE'
-      entry.tone = eventType === 'message.part.updated' ? 'tone-online' : 'tone-idle'
-
       const part = payload.payload?.part
       const message = payload.payload?.message
       const source = part ?? message
-      const delta = payload.payload?.delta
-      const baseText = typeof source?.text === 'string' ? source.text : ''
-      const deltaText = typeof delta === 'string' ? delta : ''
-      const combined = `${baseText}${deltaText}`.trim()
 
-      entry.text = combined || eventType
+      const isReasoning = source?.type === 'reasoning'
+      entry.kind = isReasoning ? 'thinking' : 'message'
+
+      entry.badge = isReasoning ? 'THINKING' : 'MESSAGE'
+      entry.tone = isReasoning ? 'tone-thinking' : eventType === 'message.part.updated' ? 'tone-online' : 'tone-idle'
+
+      const baseText = typeof source?.text === 'string' ? source.text : ''
+      const trimmedText = baseText.trim()
+
+      if (!trimmedText) {
+        return null
+      }
+
+      entry.text = trimmedText
       entry.details = formatJson(source ?? payload)
 
       const sessionID = source?.sessionID ?? source?.session_id
@@ -709,12 +772,17 @@ const buildConsoleEntry = (payload) => {
             : ''
       const exitCode =
         typeof payload.payload?.metadata?.exit === 'number' ? payload.payload.metadata.exit : null
+      const toolName = typeof payload.payload?.tool === 'string' ? payload.payload.tool : null
+
+      if (toolName === 'todowrite' && !debugMode.value) {
+        return null
+      }
       const normalizedTitle = (title ?? '').trim()
       const isTest = /\btests?\b/i.test(`${normalizedTitle} ${description}`.trim())
 
       entry.kind = isTest ? 'test' : 'tool'
       entry.badge = isTest ? 'TEST' : 'TOOL'
-      entry.tone = exitCode === 0 ? 'tone-online' : exitCode === null ? 'tone-idle' : 'tone-offline'
+      entry.tone = isTest ? (exitCode === 0 ? 'tone-online' : exitCode === null ? 'tone-idle' : 'tone-offline') : 'tone-tool'
 
       const status = exitCode === 0 ? 'PASS' : exitCode === null ? 'DONE' : `FAIL (exit ${exitCode})`
       const counts = []
@@ -728,6 +796,13 @@ const buildConsoleEntry = (payload) => {
       }
       const countsLabel = counts.length > 0 ? ` (${counts.join(', ')})` : ''
 
+      if (!isTest && toolName === 'lsp_diagnostics') {
+        const outputLabel = output.trim()
+        entry.text = truncateSingleLine(`⚙ lsp_diagnostics [${outputLabel || status}]`, 180)
+        entry.details = null
+        return entry
+      }
+
       entry.text = normalizedTitle
         ? truncateSingleLine(`${normalizedTitle} — ${status}${countsLabel}`, 180)
         : truncateSingleLine(`tool.execute.after — ${status}${countsLabel}`, 180)
@@ -738,31 +813,39 @@ const buildConsoleEntry = (payload) => {
     if (eventType === 'tool.execute.before') {
       const tool = typeof payload.payload?.tool === 'string' ? payload.payload.tool : null
       const args = payload.payload?.args
+
+      if (tool === 'todowrite' && !debugMode.value) {
+        return null
+      }
+
       const description =
         typeof args?.description === 'string'
           ? args.description
           : typeof payload.payload?.description === 'string'
             ? payload.payload.description
             : null
-      const command = typeof args?.command === 'string' ? args.command : null
-
       const normalizedDescription = (description ?? '').trim()
       const isTest = /\btests?\b/i.test(normalizedDescription)
 
       entry.kind = isTest ? 'test' : 'tool'
       entry.badge = isTest ? 'TEST' : 'TOOL'
-      entry.tone = 'tone-idle'
-      entry.text = normalizedDescription
-        ? truncateSingleLine(normalizedDescription, 180)
-        : truncateSingleLine(`tool.execute.before ${tool ?? ''}`.trim(), 180)
+      entry.tone = isTest ? 'tone-idle' : 'tone-tool'
 
-      if (tool && command) {
-        entry.details = `${tool}\n${command}`
-      } else if (tool) {
-        entry.details = `${tool}\n${formatJson(args ?? payload.payload)}`
+      if (tool === 'grep') {
+        const pattern = typeof args?.pattern === 'string' ? args.pattern : ''
+        const path = typeof args?.path === 'string' ? args.path : ''
+        const pathLabel = path ? shortenWorkspacePath(path) : ''
+        const patternLabel = pattern.replaceAll('"', '\\"')
+        entry.text = truncateSingleLine(
+          `✱ Grep "${patternLabel}"${pathLabel ? ` in ${pathLabel}` : ''}`.trim(),
+          180
+        )
       } else {
-        entry.details = formatJson(args ?? payload.payload)
+        const argsLabel = formatToolArgsInline(args)
+        entry.text = truncateSingleLine(`⚙ ${tool ?? 'tool'} ${argsLabel}`.trim(), 180)
       }
+
+      entry.details = null
 
       return entry
     }
@@ -1084,6 +1167,13 @@ watch(
 )
 
 watch(
+  () => hideDiff.value,
+  (value) => {
+    window.localStorage.setItem(hideDiffKey, value ? 'true' : 'false')
+  }
+)
+
+watch(
   () => viewerToken.value,
   async (value) => {
     const normalized = String(value || '').trim()
@@ -1197,6 +1287,28 @@ const connectViewer = () => {
         )
         if (existingIndex >= 0) {
           const existing = logEntries.value[existingIndex]
+
+          const mergeText = () => {
+            const raw = entry.raw
+            if (!raw || typeof raw !== 'object') return entry.text
+
+            if (raw.type === 'event.append' && raw.event_type === 'message.part.updated') {
+              const prior = typeof existing.text === 'string' ? existing.text : ''
+              const part = raw.payload?.part
+              const partText = typeof part?.text === 'string' ? part.text : ''
+              if (!partText) return prior
+              return partText
+            }
+
+            if (raw.type === 'event.append' && raw.event_type === 'message.completed') {
+              const incoming = typeof entry.text === 'string' ? entry.text : ''
+              if (incoming.trim()) return incoming
+              return typeof existing.text === 'string' ? existing.text : entry.text
+            }
+
+            return entry.text
+          }
+
           const merged = {
             ...existing,
             text: entry.text,
@@ -1204,17 +1316,17 @@ const connectViewer = () => {
             ts: entry.ts,
             raw: entry.raw,
           }
-          logEntries.value = [
-            merged,
-            ...logEntries.value.slice(0, existingIndex),
-            ...logEntries.value.slice(existingIndex + 1),
-          ]
+
+          merged.text = mergeText()
+          logEntries.value = logEntries.value
+            .map((item, index) => (index === existingIndex ? merged : item))
+            .slice(0, 200)
           lastMessageAt.value = merged.ts
           return
         }
       }
 
-      logEntries.value = [entry, ...logEntries.value].slice(0, 200)
+      logEntries.value = [...logEntries.value, entry].slice(-200)
       lastMessageAt.value = entry.ts
     }
   })
@@ -1264,8 +1376,24 @@ onBeforeUnmount(() => {
       </div>
       <div class="header-actions">
         <div class="pulse" :class="statusTone" aria-hidden="true"></div>
-        <button class="profile-button" type="button" @click="openTokenModal" aria-label="Pairing token">
-          <span class="profile-label">ME</span>
+        <button class="profile-button" type="button" @click="openTokenModal" aria-label="Settings">
+          <svg class="profile-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path
+              d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M19.4 15a7.8 7.8 0 0 0 .06-1 7.8 7.8 0 0 0-.06-1l2-1.55a.7.7 0 0 0 .16-.9l-1.9-3.3a.7.7 0 0 0-.84-.31l-2.35.95a7.6 7.6 0 0 0-1.72-1l-.36-2.5a.7.7 0 0 0-.69-.6h-3.8a.7.7 0 0 0-.69.6l-.36 2.5a7.6 7.6 0 0 0-1.72 1l-2.35-.95a.7.7 0 0 0-.84.31l-1.9 3.3a.7.7 0 0 0 .16.9l2 1.55a7.8 7.8 0 0 0-.06 1c0 .34.02.67.06 1l-2 1.55a.7.7 0 0 0-.16.9l1.9 3.3a.7.7 0 0 0 .84.31l2.35-.95c.54.4 1.12.74 1.72 1l.36 2.5c.05.3.32.6.69.6h3.8c.37 0 .64-.3.69-.6l.36-2.5c.6-.26 1.18-.6 1.72-1l2.35.95a.7.7 0 0 0 .84-.31l1.9-3.3a.7.7 0 0 0-.16-.9L19.4 15Z"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              opacity="0.92"
+            />
+          </svg>
         </button>
       </div>
     </header>
@@ -1276,19 +1404,6 @@ onBeforeUnmount(() => {
         We'll store it in your browser.
         <button class="button button-ghost" type="button" @click="openTokenModal">Add pairing token</button>
       </div>
-      <div class="row">
-        <label class="label" for="relayUrl">Relay URL</label>
-        <input
-          id="relayUrl"
-          v-model.trim="relayUrl"
-          class="input"
-          inputmode="url"
-          placeholder="http://localhost:8787"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </div>
-
       <div class="grid">
         <div class="metric">
           <div class="metric-label">Status</div>
@@ -1301,10 +1416,6 @@ onBeforeUnmount(() => {
         <div class="metric">
           <div class="metric-label">Latency</div>
           <div class="metric-value">{{ latencyMs === null ? '—' : `${latencyMs} ms` }}</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">Device</div>
-          <div class="metric-value">{{ deviceId || '—' }}</div>
         </div>
         <div class="metric">
           <div class="metric-label">Last plugin msg</div>
@@ -1343,22 +1454,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="footer">
-        <button class="button" type="button" @click="checkHealth" :disabled="isChecking">
-          {{ isChecking ? 'Checking…' : 'Check now' }}
-        </button>
-        <button class="button" type="button" @click="togglePolling">
-          {{ isPolling ? 'Stop auto-check' : 'Start auto-check' }}
-        </button>
-        <button class="button" type="button" @click="openTokenModal">Manage token</button>
-        <div class="hint">
-           <div class="hint-line">GET {{ relayHealthUrl || '—' }}</div>
-           <div v-if="lastError" class="hint-line hint-error">{{ lastError }}</div>
-           <div class="hint-line">WS {{ relayWsUrl || '—' }}</div>
-           <div v-if="wsError" class="hint-line hint-error">{{ wsError }}</div>
-           <div v-else-if="showExchangeError" class="hint-line hint-error">{{ exchangeError }}</div>
-         </div>
-       </div>
       </section>
 
     <ProgressCard
@@ -1401,8 +1496,11 @@ onBeforeUnmount(() => {
   <TokenModal
     :open="isTokenModalOpen"
     :hasViewerToken="hasViewerToken"
+    :deviceId="deviceId"
+    v-model:relayUrl="relayUrl"
     v-model:draft="tokenDraft"
     v-model:debugMode="debugMode"
+    v-model:hideDiff="hideDiff"
     @save="saveViewerToken"
     @cancel="closeTokenModal"
     @clear="clearViewerTokenFromModal"
