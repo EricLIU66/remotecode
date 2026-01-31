@@ -85,6 +85,12 @@ body {
   color: rgba(30, 35, 41, 0.68);
 }
 
+.profile-icon {
+  width: 18px;
+  height: 18px;
+  color: rgba(30, 35, 41, 0.72);
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -150,7 +156,7 @@ body {
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(30, 35, 41, 0.65);
+  color: rgba(219, 221, 225, 0.65);
 }
 
 .input {
@@ -507,7 +513,7 @@ body {
 
 .console-line {
   display: grid;
-  grid-template-columns: 160px 1fr;
+  grid-template-columns: 1fr;
   gap: 12px;
   padding: 6px 0;
   border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
@@ -599,6 +605,36 @@ body {
   color: var(--console-ink);
 }
 
+.console-markdown {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.console-markdown a {
+  color: rgba(125, 211, 252, 0.95);
+  text-decoration: underline;
+}
+
+.console-markdown code {
+  padding: 0 4px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.console-entry-thinking .console-markdown {
+  color: rgba(233, 237, 242, 0.68);
+}
+
+.console-entry-thinking .console-markdown a {
+  color: rgba(186, 193, 202, 0.92);
+}
+
+.console-entry-thinking .console-markdown code {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
 .console-badge {
   display: inline-flex;
   align-items: center;
@@ -624,9 +660,21 @@ body {
   background: rgba(161, 98, 7, 0.18);
 }
 
+.console-badge.tone-tool {
+  border-color: rgba(194, 65, 12, 0.55);
+  background: rgba(194, 65, 12, 0.16);
+  color: rgba(255, 237, 213, 0.95);
+}
+
 .console-badge.tone-idle {
   border-color: rgba(90, 126, 205, 0.55);
   background: rgba(90, 126, 205, 0.16);
+}
+
+.console-badge.tone-thinking {
+  border-color: rgba(234, 179, 8, 0.55);
+  background: rgba(234, 179, 8, 0.16);
+  color: rgba(254, 243, 199, 0.95);
 }
 
 .console-badge.tone-offline {
@@ -1056,6 +1104,19 @@ body {
 
 .modal-input {
   margin-top: 14px;
+}
+
+.modal-kv {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 33, 44, 0.12);
+  background: rgba(255, 255, 255, 0.6);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  color: rgba(30, 35, 41, 0.7);
+  word-break: break-word;
 }
 
 .modal-actions {
