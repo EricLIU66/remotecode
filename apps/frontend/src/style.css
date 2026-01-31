@@ -227,6 +227,26 @@ body {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
 }
 
+.button-small {
+  padding: 7px 10px;
+  font-size: 12px;
+  border-radius: 12px;
+}
+
+.metric-value-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.metric-subvalue {
+  font-size: 12px;
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  letter-spacing: 0.02em;
+  color: rgba(30, 35, 41, 0.62);
+}
+
 .console {
   margin-top: 18px;
   background: radial-gradient(1200px 600px at 10% 0%, rgba(39, 54, 72, 0.35), transparent 60%),
@@ -256,6 +276,14 @@ body {
   margin-top: 6px;
   font-size: 20px;
   letter-spacing: -0.02em;
+}
+
+.progress-subtitle {
+  margin-top: 6px;
+  font-size: 12px;
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  letter-spacing: 0.02em;
+  color: rgba(233, 237, 242, 0.62);
 }
 
 .progress-chips {
@@ -304,6 +332,13 @@ body {
   color: rgba(233, 237, 242, 0.70);
 }
 
+.progress-panel-meta {
+  margin-top: 6px;
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  color: rgba(233, 237, 242, 0.62);
+}
+
 .progress-empty {
   margin-top: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
@@ -318,7 +353,7 @@ body {
 
 .todo-item {
   display: grid;
-  grid-template-columns: 110px 1fr;
+  grid-template-columns: 34px 1fr;
   gap: 12px;
   padding: 8px 0;
   border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
@@ -329,11 +364,20 @@ body {
 }
 
 .todo-status {
-  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 12px;
+  border: 1px solid rgba(233, 237, 242, 0.14);
+  background: rgba(0, 0, 0, 0.20);
   color: rgba(233, 237, 242, 0.72);
+}
+
+.todo-status-icon {
+  width: 16px;
+  height: 16px;
 }
 
 .todo-content {
@@ -355,6 +399,18 @@ body {
 
 .todo-cancelled .todo-status {
   color: rgba(180, 35, 24, 0.95);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
 }
 
 .toast {
@@ -447,24 +503,7 @@ body {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
-.console-highlights {
-  display: grid;
-  gap: 4px;
-  margin-bottom: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
 
-.console-highlight-line {
-  padding: 8px 0;
-}
-
-.console-highlight-label {
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-size: 11px;
-  color: rgba(233, 237, 242, 0.72);
-}
 
 .console-line {
   display: grid;
@@ -496,6 +535,56 @@ body {
   color: rgba(233, 237, 242, 0.92);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+
+.console-expanded-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0 6px;
+}
+
+.console-expanded-label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(233, 237, 242, 0.65);
+}
+
+.console-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid rgba(233, 237, 242, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+}
+
+.console-icon-button:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.console-icon-button:focus {
+  outline: none;
+}
+
+.console-icon-button:focus-visible {
+  box-shadow: 0 0 0 2px rgba(233, 237, 242, 0.22);
+}
+
+.console-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.console-raw-secondary {
+  margin-top: 0;
 }
 
 .console-line:last-child {
@@ -579,6 +668,85 @@ body {
   background: rgba(15, 23, 42, 0.03);
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   color: #0f172a;
+}
+
+.diff-empty {
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.62);
+}
+
+.diff-unified {
+  display: grid;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.diff-hunk {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.diff-hunk:last-child {
+  border-bottom: none;
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  white-space: pre;
+}
+
+.diff-line:last-child {
+  border-bottom: none;
+}
+
+.diff-line-prefix {
+  opacity: 0.9;
+}
+
+.diff-line-context {
+  background: transparent;
+  color: rgba(15, 23, 42, 0.82);
+}
+
+.diff-line-add {
+  background: rgba(16, 185, 129, 0.08);
+  border-left: 3px solid rgba(16, 185, 129, 0.7);
+}
+
+.diff-line-del {
+  background: rgba(239, 68, 68, 0.08);
+  border-left: 3px solid rgba(239, 68, 68, 0.7);
+}
+
+.diff-line-add .diff-line-prefix {
+  color: rgba(6, 95, 70, 0.95);
+}
+
+.diff-line-del .diff-line-prefix {
+  color: rgba(153, 27, 27, 0.95);
+}
+
+.diff-sbs {
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.diff-sbs-row {
+  display: block;
+}
+
+.diff-sbs-empty {
+  height: 33px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
 }
 .diff-columns {
   display: grid;
@@ -696,6 +864,131 @@ body {
   pointer-events: auto;
 }
 
+.agents-modal {
+  width: min(920px, 96vw);
+  max-height: 86vh;
+  overflow: auto;
+}
+
+.agents-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.agents-empty {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  color: rgba(30, 35, 41, 0.65);
+  margin-top: 8px;
+}
+
+.agent-card {
+  margin-top: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 33, 44, 0.14);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 14px;
+}
+
+.agent-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-name {
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+
+.agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.agent-pill {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 33, 44, 0.14);
+  background: rgba(255, 255, 255, 0.7);
+  color: rgba(30, 35, 41, 0.8);
+}
+
+.agent-section {
+  margin-top: 10px;
+}
+
+.agent-section-title {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(30, 35, 41, 0.62);
+}
+
+.perm-table {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 160px 120px 1fr;
+  gap: 8px 10px;
+  align-items: start;
+}
+
+.perm-head {
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  color: rgba(30, 35, 41, 0.66);
+}
+
+.perm-cell {
+  font-size: 13px;
+  color: rgba(30, 35, 41, 0.9);
+}
+
+.perm-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+}
+
+.perm-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-family: ui-sans-serif, "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(24, 33, 44, 0.16);
+}
+
+.perm-chip-allow {
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+}
+
+.perm-chip-deny {
+  background: rgba(180, 35, 24, 0.12);
+  color: #b42318;
+}
+
+.perm-chip-ask {
+  background: rgba(161, 98, 7, 0.12);
+  color: #a16207;
+}
+
 .diff-modal {
   width: min(960px, 96vw);
   max-height: 86vh;
@@ -770,6 +1063,38 @@ body {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 16px;
+}
+
+.modal-toggle {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 33, 44, 0.12);
+  background: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+}
+
+.modal-toggle-input {
+  margin-top: 3px;
+}
+
+.modal-toggle-body {
+  display: grid;
+  gap: 3px;
+}
+
+.modal-toggle-title {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.modal-toggle-help {
+  font-size: 12px;
+  color: rgba(30, 35, 41, 0.68);
 }
 
 .pulse {
