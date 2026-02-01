@@ -121,25 +121,100 @@ const promptChoice = async (question, choices) => {
     return choices[0]?.value;
   }
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  if (!process.stdout.isTTY || choices.length <= 1) {
+    return choices[0]?.value;
+  }
 
-  try {
-    for (;;) {
-      rl.write(`${question}\n`);
-      for (const choice of choices) {
-        rl.write(`  ${choice.key}) ${choice.label}\n`);
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  const wasRawMode = Boolean(stdin.isRaw);
+
+  readline.emitKeypressEvents(stdin);
+  if (stdin.setRawMode) {
+    stdin.setRawMode(true);
+  }
+  stdin.resume();
+
+  let index = 0;
+  let rendered = false;
+  let done = false;
+
+  const render = () => {
+    if (rendered) {
+      stdout.write(`\x1b[${choices.length}A`);
+    } else {
+      rendered = true;
+    }
+
+    for (let i = 0; i < choices.length; i += 1) {
+      const choice = choices[i];
+      const prefix = i === index ? ">" : " ";
+      stdout.write("\x1b[2K");
+      stdout.write(`${prefix} ${choice.label}\n`);
+    }
+  };
+
+  stdout.write(`\n${question}\n`);
+  stdout.write("\x1b[?25l");
+  render();
+
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      stdin.off("keypress", onKeypress);
+      stdout.write("\x1b[?25h");
+      if (stdin.setRawMode) {
+        stdin.setRawMode(wasRawMode);
       }
-      const answer = await new Promise((resolve) => rl.question("> ", resolve));
-      const normalized = String(answer ?? "").trim();
+      stdin.pause();
+    };
+
+    const selectIndex = (nextIndex) => {
+      index = (nextIndex + choices.length) % choices.length;
+      render();
+    };
+
+    const commit = (value) => {
+      cleanup();
+      stdout.write("\n");
+      resolve(value);
+    };
+
+    const onKeypress = (str, key) => {
+      if (key?.name === "up") {
+        selectIndex(index - 1);
+        return;
+      }
+      if (key?.name === "down") {
+        selectIndex(index + 1);
+        return;
+      }
+      if (key?.name === "return" || key?.name === "enter") {
+        commit(choices[index]?.value);
+        return;
+      }
+      if (key?.name === "escape") {
+        commit(choices[0]?.value);
+        return;
+      }
+
+      if (key?.name === "c" && key?.ctrl) {
+        cleanup();
+        process.exitCode = 130;
+        return;
+      }
+
+      const normalized = String(str ?? "").trim();
+      if (!normalized) return;
       const match = choices.find((choice) => choice.key === normalized);
       if (match) {
-        return match.value;
+        commit(match.value);
       }
-      rl.write("Invalid choice.\n\n");
-    }
-  } finally {
-    rl.close();
-  }
+    };
+
+    stdin.on("keypress", onKeypress);
+  });
 };
 
 const renderPairingQr = async ({ relayUrl, deviceId, pairingToken, expiresAt }) => {
@@ -149,10 +224,60 @@ const renderPairingQr = async ({ relayUrl, deviceId, pairingToken, expiresAt }) 
     pairing_token: pairingToken,
   });
 
-  const qr = await QRCode.toString(payload, {
-    type: "terminal",
-    errorCorrectionLevel: "M",
-  });
+  const render = /** @type {(opts: any) => Promise<string>} */ ((opts) =>
+    new Promise((resolve, reject) => {
+      QRCode.toString(payload, opts, (error, value) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(String(value ?? ""));
+      });
+    }));
+
+  const columns = process.stdout.columns ?? null;
+  const rows = process.stdout.rows ?? null;
+
+  const fitsTerminal = (value) => {
+    if (!columns || !rows) return true;
+    const lines = String(value).split("\n").filter(Boolean);
+    const width = lines.reduce((max, line) => Math.max(max, line.length), 0);
+    const height = lines.length;
+
+    // Leave room for the surrounding text we print during auth.
+    const reservedRows = 10;
+    return width <= columns && height <= Math.max(1, rows - reservedRows);
+  };
+
+  const area = (value) => {
+    const lines = String(value).split("\n").filter(Boolean);
+    const width = lines.reduce((max, line) => Math.max(max, line.length), 0);
+    return width * lines.length;
+  };
+
+  const candidates = [
+    { type: "terminal", errorCorrectionLevel: "L", margin: 1, small: true },
+    { type: "terminal", errorCorrectionLevel: "L", margin: 0, small: true },
+    { type: "terminal", errorCorrectionLevel: "L", margin: 1 },
+    { type: "terminal", errorCorrectionLevel: "L", margin: 0 },
+  ];
+
+  const renderedList = await Promise.all(candidates.map((opts) => render(opts)));
+
+  let smallest = null;
+  let best = null;
+
+  for (const rendered of renderedList) {
+    if (!smallest || area(rendered) < area(smallest)) {
+      smallest = rendered;
+    }
+
+    if (!best && fitsTerminal(rendered)) {
+      best = rendered;
+    }
+  }
+
+  const qr = best ?? smallest ?? "";
 
   if (expiresAt) {
     console.log(`pairing_qr_expires_at ${expiresAt}`);
@@ -214,6 +339,7 @@ const runAuth = async () => {
       pairingToken: pairing.pairingToken,
       expiresAt: pairing.expiresAt,
     });
+
     console.log("Scan this QR code in the RemoteCode iOS app to complete pairing.");
   } catch (error) {
     console.error("remotecode_auth_qr_failed", error);

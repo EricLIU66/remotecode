@@ -13,6 +13,7 @@ Vue 3 + Vite single-page status dashboard for the RemoteCode relay.
 
 ## CONVENTIONS
 - Keep dependencies minimal (no UI frameworks) and use plain CSS.
+- When functionality is non-trivial (markdown rendering, syntax highlighting, diff viewers, etc.), prefer professional, well-maintained packages over rolling custom implementations.
 - Persist relay URL in `localStorage` (key: `remotecode.relay_url`).
 - Prefer read-only, privacy-safe surfaces (no command execution).
 

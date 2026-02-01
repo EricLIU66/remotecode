@@ -32,6 +32,7 @@ RemoteCode is a self-hosted, view-only mobile companion for OpenCode: a desktop 
 - WebSocket paths are `/ws/device` and `/ws/viewer` with query tokens.
 - No file contents in v1; secrets must be redacted before transmit.
 - Desktop plugin never accepts inbound connections; only outbound to relay.
+- Prefer professional, well-maintained packages over rolling custom implementations; adding a dependency is OK when it materially improves correctness/maintainability.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not add command execution or push notifications in v1.

@@ -1,7 +1,29 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import TokenModal from './components/TokenModal.vue'
+import AgentsModal from './components/AgentsModal.vue'
+import ProgressCard from './components/ProgressCard.vue'
+import ConsoleCard from './components/ConsoleCard.vue'
 
-const defaultRelayUrl = import.meta.env.VITE_RELAY_URL || 'http://localhost:8787'
+const DiffModal = defineAsyncComponent(() => import('./components/DiffModal.vue'))
+
+const computeDefaultRelayUrl = () => {
+  const override = import.meta.env.VITE_RELAY_URL
+  if (override) return override
+
+  try {
+    const base = new URL(window.location.href)
+    base.port = '8787'
+    base.pathname = ''
+    base.search = ''
+    base.hash = ''
+    return base.toString().replace(/\/$/, '')
+  } catch {
+    return 'http://localhost:8787'
+  }
+}
+
+const defaultRelayUrl = computeDefaultRelayUrl()
 const storageKey = 'remotecode.relay_url'
 
 const loadRelayUrl = () => {
@@ -17,6 +39,20 @@ const loadViewerToken = () => {
 }
 const viewerToken = ref(loadViewerToken())
 const hasViewerToken = computed(() => Boolean(String(viewerToken.value || '').trim()))
+
+const debugModeKey = 'remotecode.debug_mode'
+const loadDebugMode = () => {
+  const stored = window.localStorage.getItem(debugModeKey)
+  return stored === 'true'
+}
+const debugMode = ref(loadDebugMode())
+
+const hideDiffKey = 'remotecode.hide_diff'
+const loadHideDiff = () => {
+  const stored = window.localStorage.getItem(hideDiffKey)
+  return stored === 'true'
+}
+const hideDiff = ref(loadHideDiff())
 const isExchanging = ref(false)
 const exchangeError = ref(null)
 const isChecking = ref(false)
@@ -33,11 +69,17 @@ const deviceId = ref(null)
 const logEntries = ref([])
 const latestSnapshot = ref(null)
 const latestEvent = ref(null)
+const latestMessageInfo = ref(null)
 const sessionInfo = ref(null)
+const sessionTitleUpdatedAt = ref(null)
+const todoOverride = ref(null)
+const todoUpdatedAt = ref(null)
 const sessionStatusOverride = ref(null)
+const localToastOverride = ref(null)
 const expandedEntryKey = ref(null)
 const expandedConsoleSection = ref(null)
 const isTokenModalOpen = ref(false)
+const isAgentsModalOpen = ref(false)
 const tokenDraft = ref('')
 const activeDiff = ref(null)
 const activeDiffFile = ref(null)
@@ -76,6 +118,7 @@ const sessionStatusTone = computed(() => {
 })
 
 const todos = computed(() => {
+  if (Array.isArray(todoOverride.value)) return todoOverride.value
   const list = remotecodeMeta.value?.todos
   return Array.isArray(list) ? list : []
 })
@@ -96,6 +139,9 @@ const queuedCount = computed(() => {
 })
 
 const latestToast = computed(() => {
+  if (localToastOverride.value && typeof localToastOverride.value === 'object') {
+    return localToastOverride.value
+  }
   const toast = remotecodeMeta.value?.toast
   return toast && typeof toast === 'object' ? toast : null
 })
@@ -107,6 +153,46 @@ const toastTone = computed(() => {
   if (variant === 'error') return 'toast-error'
   return 'toast-info'
 })
+
+let localToastTimer = null
+
+const showLocalToast = ({ title, message, variant = 'info' }) => {
+  localToastOverride.value = {
+    title,
+    message,
+    variant,
+    ts: new Date().toISOString(),
+  }
+  localToastTimer && window.clearTimeout(localToastTimer)
+  localToastTimer = window.setTimeout(() => {
+    localToastOverride.value = null
+    localToastTimer = null
+  }, 8000)
+}
+
+watch(
+  () => sessionStatus.value,
+  (next, prev) => {
+    const prevType = prev?.type
+    const nextType = next?.type
+    if (prevType !== 'busy' || nextType !== 'idle') return
+    if (runningCount.value !== 0 || queuedCount.value !== 0) return
+
+    showLocalToast({
+      title: 'Idle',
+      message: 'All tasks finished.',
+      variant: 'success',
+    })
+
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try {
+        new Notification('RemoteCode', { body: 'All tasks finished.' })
+      } catch {
+        // ignore
+      }
+    }
+  }
+)
 
 const relayHealthUrl = computed(() => {
   try {
@@ -520,6 +606,40 @@ const countLineChanges = (beforeText, afterText) => {
   }
 }
 
+const shortenWorkspacePath = (value) => {
+  const raw = String(value ?? '')
+  if (!raw) return ''
+  const marker = '/apps/'
+  const idx = raw.lastIndexOf(marker)
+  if (idx >= 0) {
+    return raw.slice(idx + 1)
+  }
+  return raw
+}
+
+const formatToolArgValue = (key, value) => {
+  if (typeof value !== 'string') return value
+  if (key.toLowerCase().includes('path')) {
+    return shortenWorkspacePath(value)
+  }
+  return value
+}
+
+const formatToolArgsInline = (args) => {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return ''
+  const keys = Object.keys(args).sort()
+  const parts = []
+  for (const key of keys) {
+    const rawValue = args[key]
+    const value = formatToolArgValue(key, rawValue)
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      parts.push(`${key}=${value}`)
+    }
+  }
+  if (parts.length === 0) return ''
+  return `[${parts.join(', ')}]`
+}
+
 let nextEntryId = 1
 const buildConsoleEntry = (payload) => {
   const raw = payload
@@ -554,15 +674,28 @@ const buildConsoleEntry = (payload) => {
   if (payload.type === 'event.append') {
     const eventType = payload.event_type
     if (eventType === 'session.idle') {
-      return null
+      if (!debugMode.value) return null
     }
 
     if (eventType === 'session.status') {
       sessionStatusOverride.value = payload.payload?.status ?? null
+      if (!debugMode.value) return null
+    }
+
+    if (eventType === 'todo.updated') {
+      if (!debugMode.value) return null
+    }
+
+    if (eventType === 'message.updated') {
+      if (!debugMode.value) return null
+    }
+
+    if (eventType === 'message.updated') {
       return null
     }
 
     if (eventType === 'session.diff') {
+      if (hideDiff.value) return null
       entry.kind = 'diff'
       entry.badge = 'DIFF'
       entry.tone = 'tone-warn'
@@ -591,30 +724,159 @@ const buildConsoleEntry = (payload) => {
     }
 
     if (eventType === 'session.updated') {
-      entry.kind = 'session'
-      entry.badge = 'SESSION'
-      entry.tone = 'tone-idle'
-      const info = payload.payload?.info
-      const title = typeof info?.title === 'string' ? info.title : null
-      entry.text = title ? title : 'session.updated'
-      entry.details = formatJson(info ?? payload)
+      if (!debugMode.value) return null
+    }
+
+    if (
+      eventType === 'message.part.updated' ||
+      eventType === 'message.part.completed' ||
+      eventType === 'message.completed'
+    ) {
+      const part = payload.payload?.part
+      const message = payload.payload?.message
+      const source = part ?? message
+
+      const isReasoning = source?.type === 'reasoning'
+      entry.kind = isReasoning ? 'thinking' : 'message'
+
+      entry.badge = isReasoning ? 'THINKING' : 'MESSAGE'
+      entry.tone = isReasoning ? 'tone-thinking' : eventType === 'message.part.updated' ? 'tone-online' : 'tone-idle'
+
+      const baseText = typeof source?.text === 'string' ? source.text : ''
+      const trimmedText = baseText.trim()
+
+      if (!trimmedText) {
+        return null
+      }
+
+      entry.text = trimmedText
+      entry.details = formatJson(source ?? payload)
+
+      const sessionID = source?.sessionID ?? source?.session_id
+      const messageID = source?.messageID ?? source?.message_id ?? source?.id
+      if (sessionID && messageID) {
+        entry.messageKey = `${sessionID}:${messageID}`
+      }
       return entry
     }
 
-    if (eventType === 'message.part.updated') {
-      entry.kind = 'message'
-      entry.badge = 'MESSAGE'
-      entry.tone = 'tone-online'
-      const part = payload.payload?.part
-      const delta = payload.payload?.delta
-      const baseText = typeof part?.text === 'string' ? part.text : ''
-      const deltaText = typeof delta === 'string' ? delta : ''
-      const combined = `${baseText}${deltaText}`.trim()
-      entry.text = combined || 'message.part.updated'
-      entry.details = formatJson(part ?? payload)
-      if (part?.sessionID && part?.messageID) {
-        entry.messageKey = `${part.sessionID}:${part.messageID}`
+    if (eventType === 'tool.execute.after') {
+      const title = typeof payload.payload?.title === 'string' ? payload.payload.title : null
+      const description =
+        typeof payload.payload?.metadata?.description === 'string' ? payload.payload.metadata.description : ''
+      const output =
+        typeof payload.payload?.output === 'string'
+          ? payload.payload.output
+          : typeof payload.payload?.metadata?.output === 'string'
+            ? payload.payload.metadata.output
+            : ''
+      const exitCode =
+        typeof payload.payload?.metadata?.exit === 'number' ? payload.payload.metadata.exit : null
+      const toolName = typeof payload.payload?.tool === 'string' ? payload.payload.tool : null
+
+      if (toolName === 'todowrite' && !debugMode.value) {
+        return null
       }
+      const normalizedTitle = (title ?? '').trim()
+      const isTest = /\btests?\b/i.test(`${normalizedTitle} ${description}`.trim())
+
+      entry.kind = isTest ? 'test' : 'tool'
+      entry.badge = isTest ? 'TEST' : 'TOOL'
+      entry.tone = isTest ? (exitCode === 0 ? 'tone-online' : exitCode === null ? 'tone-idle' : 'tone-offline') : 'tone-tool'
+
+      const status = exitCode === 0 ? 'PASS' : exitCode === null ? 'DONE' : `FAIL (exit ${exitCode})`
+      const counts = []
+      const filesMatch = output.match(/Test Files\s+(\d+)\s+passed\s+\((\d+)\)/)
+      if (filesMatch) {
+        counts.push(`files ${filesMatch[1]}/${filesMatch[2]}`)
+      }
+      const testsMatch = output.match(/Tests\s+(\d+)\s+passed\s+\((\d+)\)/)
+      if (testsMatch) {
+        counts.push(`tests ${testsMatch[1]}/${testsMatch[2]}`)
+      }
+      const countsLabel = counts.length > 0 ? ` (${counts.join(', ')})` : ''
+
+      if (!isTest && toolName === 'lsp_diagnostics') {
+        const outputLabel = output.trim()
+        entry.text = truncateSingleLine(`⚙ lsp_diagnostics [${outputLabel || status}]`, 180)
+        entry.details = null
+        return entry
+      }
+
+      entry.text = normalizedTitle
+        ? truncateSingleLine(`${normalizedTitle} — ${status}${countsLabel}`, 180)
+        : truncateSingleLine(`tool.execute.after — ${status}${countsLabel}`, 180)
+      entry.details = output.trim() ? output : formatJson(payload.payload)
+      return entry
+    }
+
+    if (eventType === 'tool.execute.before') {
+      const tool = typeof payload.payload?.tool === 'string' ? payload.payload.tool : null
+      const args = payload.payload?.args
+
+      if (tool === 'todowrite' && !debugMode.value) {
+        return null
+      }
+
+      const description =
+        typeof args?.description === 'string'
+          ? args.description
+          : typeof payload.payload?.description === 'string'
+            ? payload.payload.description
+            : null
+      const normalizedDescription = (description ?? '').trim()
+      const isTest = /\btests?\b/i.test(normalizedDescription)
+
+      entry.kind = isTest ? 'test' : 'tool'
+      entry.badge = isTest ? 'TEST' : 'TOOL'
+      entry.tone = isTest ? 'tone-idle' : 'tone-tool'
+
+      if (tool === 'grep') {
+        const pattern = typeof args?.pattern === 'string' ? args.pattern : ''
+        const path = typeof args?.path === 'string' ? args.path : ''
+        const pathLabel = path ? shortenWorkspacePath(path) : ''
+        const patternLabel = pattern.replaceAll('"', '\\"')
+        entry.text = truncateSingleLine(
+          `✱ Grep "${patternLabel}"${pathLabel ? ` in ${pathLabel}` : ''}`.trim(),
+          180
+        )
+      } else {
+        const argsLabel = formatToolArgsInline(args)
+        entry.text = truncateSingleLine(`⚙ ${tool ?? 'tool'} ${argsLabel}`.trim(), 180)
+      }
+
+      entry.details = null
+
+      return entry
+    }
+
+    const summary = payload.payload?.info?.summary
+    if (summary && typeof summary === 'object') {
+      const title = typeof summary.title === 'string' ? summary.title : null
+      const diffs = Array.isArray(summary.diffs) ? summary.diffs : []
+
+      if (diffs.length > 0) {
+        entry.kind = 'diff'
+        entry.badge = 'DIFF'
+        entry.tone = 'tone-warn'
+        entry.text = title ? truncateSingleLine(title, 160) : truncateSingleLine(formatInline(summary), 160)
+        entry.details = formatJson(summary)
+        entry.diffBlocks = diffs
+          .filter((d) => d && typeof d === 'object')
+          .map((d) => ({
+            file: d?.file ?? 'unknown file',
+            language: d?.language,
+            lines: buildUnifiedDiffLines(d?.before, d?.after),
+            columns: buildSideBySideDiff(d?.before, d?.after),
+          }))
+        return entry
+      }
+
+      entry.kind = 'event'
+      entry.badge = 'EVENT'
+      entry.tone = payload.severity === 'error' ? 'tone-offline' : 'tone-idle'
+      entry.text = title ? truncateSingleLine(title, 160) : truncateSingleLine(formatInline(summary), 160)
+      entry.details = formatJson(summary)
       return entry
     }
 
@@ -642,6 +904,34 @@ const modelLabel = computed(() => {
 const modelDisplay = computed(() => {
   if (modelLabel.value === '—') return '—'
   return truncateSingleLine(modelLabel.value, 32)
+})
+
+const messageModelDisplay = computed(() => {
+  const info = latestMessageInfo.value
+  const providerID = typeof info?.providerID === 'string' ? info.providerID.trim() : ''
+  const modelID = typeof info?.modelID === 'string' ? info.modelID.trim() : ''
+  if (providerID && modelID) return truncateSingleLine(`${providerID} / ${modelID}`, 32)
+  if (modelID) return truncateSingleLine(modelID, 32)
+  if (providerID) return truncateSingleLine(providerID, 32)
+  return modelDisplay.value
+})
+
+const modeAgentDisplay = computed(() => {
+  const info = latestMessageInfo.value
+  const mode = typeof info?.mode === 'string' ? info.mode.trim() : ''
+  const agent = typeof info?.agent === 'string' ? info.agent.trim() : ''
+  if (mode && agent) return truncateSingleLine(`${mode} · ${agent}`, 32)
+  if (mode) return truncateSingleLine(mode, 32)
+  if (agent) return truncateSingleLine(agent, 32)
+  return '—'
+})
+
+const costDisplay = computed(() => {
+  const info = latestMessageInfo.value
+  const cost = info?.cost
+  if (typeof cost === 'number' && Number.isFinite(cost)) return String(cost)
+  if (typeof cost === 'string' && cost.trim()) return cost.trim()
+  return '—'
 })
 
 const thinkingEntries = computed(() => {
@@ -710,8 +1000,16 @@ const openTokenModal = () => {
   isTokenModalOpen.value = true
 }
 
+const openAgentsModal = () => {
+  isAgentsModalOpen.value = true
+}
+
 const closeTokenModal = () => {
   isTokenModalOpen.value = false
+}
+
+const closeAgentsModal = () => {
+  isAgentsModalOpen.value = false
 }
 
 const saveViewerToken = () => {
@@ -840,6 +1138,42 @@ watch(
 )
 
 watch(
+  () => debugMode.value,
+  (value) => {
+    window.localStorage.setItem(debugModeKey, value ? 'true' : 'false')
+
+    if (value) return
+
+    const isDebugOnlyPayload = (raw) => {
+      if (!raw || typeof raw !== 'object') return false
+      if (raw.type === 'snapshot.update') return true
+      if (raw.type !== 'event.append') return false
+      const eventType = raw.event_type
+      return (
+        eventType === 'session.idle' ||
+        eventType === 'session.status' ||
+        eventType === 'session.updated' ||
+        eventType === 'todo.updated' ||
+        eventType === 'message.updated'
+      )
+    }
+
+    const filtered = logEntries.value.filter((entry) => !isDebugOnlyPayload(entry?.raw))
+    logEntries.value = filtered
+    if (expandedEntryKey.value !== null && !filtered.some((entry) => entry.id === expandedEntryKey.value)) {
+      expandedEntryKey.value = null
+    }
+  }
+)
+
+watch(
+  () => hideDiff.value,
+  (value) => {
+    window.localStorage.setItem(hideDiffKey, value ? 'true' : 'false')
+  }
+)
+
+watch(
   () => viewerToken.value,
   async (value) => {
     const normalized = String(value || '').trim()
@@ -920,12 +1254,28 @@ const connectViewer = () => {
 
     if (payload?.type === 'snapshot.update') {
       latestSnapshot.value = payload
+      lastMessageAt.value = payload.ts ?? new Date().toISOString()
+      if (!debugMode.value) return
     }
 
     if (payload?.type === 'event.append') {
       latestEvent.value = payload
       if (payload.event_type === 'session.updated' && payload.payload?.info) {
         sessionInfo.value = payload.payload.info
+        sessionTitleUpdatedAt.value = payload.ts ?? new Date().toISOString()
+        if (!debugMode.value) return
+      }
+
+      if (payload.event_type === 'message.updated' && payload.payload?.info) {
+        latestMessageInfo.value = payload.payload.info
+        if (!debugMode.value) return
+      }
+
+      if (payload.event_type === 'todo.updated') {
+        const list = payload.payload?.todos
+        todoOverride.value = Array.isArray(list) ? list : []
+        todoUpdatedAt.value = payload.ts ?? new Date().toISOString()
+        if (!debugMode.value) return
       }
     }
 
@@ -937,6 +1287,28 @@ const connectViewer = () => {
         )
         if (existingIndex >= 0) {
           const existing = logEntries.value[existingIndex]
+
+          const mergeText = () => {
+            const raw = entry.raw
+            if (!raw || typeof raw !== 'object') return entry.text
+
+            if (raw.type === 'event.append' && raw.event_type === 'message.part.updated') {
+              const prior = typeof existing.text === 'string' ? existing.text : ''
+              const part = raw.payload?.part
+              const partText = typeof part?.text === 'string' ? part.text : ''
+              if (!partText) return prior
+              return partText
+            }
+
+            if (raw.type === 'event.append' && raw.event_type === 'message.completed') {
+              const incoming = typeof entry.text === 'string' ? entry.text : ''
+              if (incoming.trim()) return incoming
+              return typeof existing.text === 'string' ? existing.text : entry.text
+            }
+
+            return entry.text
+          }
+
           const merged = {
             ...existing,
             text: entry.text,
@@ -944,17 +1316,17 @@ const connectViewer = () => {
             ts: entry.ts,
             raw: entry.raw,
           }
-          logEntries.value = [
-            merged,
-            ...logEntries.value.slice(0, existingIndex),
-            ...logEntries.value.slice(existingIndex + 1),
-          ]
+
+          merged.text = mergeText()
+          logEntries.value = logEntries.value
+            .map((item, index) => (index === existingIndex ? merged : item))
+            .slice(0, 200)
           lastMessageAt.value = merged.ts
           return
         }
       }
 
-      logEntries.value = [entry, ...logEntries.value].slice(0, 200)
+      logEntries.value = [...logEntries.value, entry].slice(-200)
       lastMessageAt.value = entry.ts
     }
   })
@@ -986,6 +1358,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopPolling()
   currentAbort?.abort()
+  localToastTimer && window.clearTimeout(localToastTimer)
+  localToastTimer = null
   disconnectViewer()
 })
 </script>
@@ -1002,8 +1376,24 @@ onBeforeUnmount(() => {
       </div>
       <div class="header-actions">
         <div class="pulse" :class="statusTone" aria-hidden="true"></div>
-        <button class="profile-button" type="button" @click="openTokenModal" aria-label="Pairing token">
-          <span class="profile-label">ME</span>
+        <button class="profile-button" type="button" @click="openTokenModal" aria-label="Settings">
+          <svg class="profile-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path
+              d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M19.4 15a7.8 7.8 0 0 0 .06-1 7.8 7.8 0 0 0-.06-1l2-1.55a.7.7 0 0 0 .16-.9l-1.9-3.3a.7.7 0 0 0-.84-.31l-2.35.95a7.6 7.6 0 0 0-1.72-1l-.36-2.5a.7.7 0 0 0-.69-.6h-3.8a.7.7 0 0 0-.69.6l-.36 2.5a7.6 7.6 0 0 0-1.72 1l-2.35-.95a.7.7 0 0 0-.84.31l-1.9 3.3a.7.7 0 0 0 .16.9l2 1.55a7.8 7.8 0 0 0-.06 1c0 .34.02.67.06 1l-2 1.55a.7.7 0 0 0-.16.9l1.9 3.3a.7.7 0 0 0 .84.31l2.35-.95c.54.4 1.12.74 1.72 1l.36 2.5c.05.3.32.6.69.6h3.8c.37 0 .64-.3.69-.6l.36-2.5c.6-.26 1.18-.6 1.72-1l2.35.95a.7.7 0 0 0 .84-.31l1.9-3.3a.7.7 0 0 0-.16-.9L19.4 15Z"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              opacity="0.92"
+            />
+          </svg>
         </button>
       </div>
     </header>
@@ -1014,19 +1404,6 @@ onBeforeUnmount(() => {
         We'll store it in your browser.
         <button class="button button-ghost" type="button" @click="openTokenModal">Add pairing token</button>
       </div>
-      <div class="row">
-        <label class="label" for="relayUrl">Relay URL</label>
-        <input
-          id="relayUrl"
-          v-model.trim="relayUrl"
-          class="input"
-          inputmode="url"
-          placeholder="http://localhost:8787"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </div>
-
       <div class="grid">
         <div class="metric">
           <div class="metric-label">Status</div>
@@ -1041,235 +1418,104 @@ onBeforeUnmount(() => {
           <div class="metric-value">{{ latencyMs === null ? '—' : `${latencyMs} ms` }}</div>
         </div>
         <div class="metric">
-          <div class="metric-label">Last OK</div>
-          <div class="metric-value">{{ fmtTime(lastOkAt) }}</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">Device</div>
-          <div class="metric-value">{{ deviceId || '—' }}</div>
-        </div>
-        <div class="metric">
           <div class="metric-label">Last plugin msg</div>
-          <div class="metric-value">{{ fmtTime(lastMessageAt) }}</div>
+          <div class="metric-value metric-value-stack">
+            <div>{{ fmtTime(latestMessageInfo?.time?.created) }}</div>
+            <div class="metric-subvalue">done {{ fmtTime(latestMessageInfo?.time?.completed) }}</div>
+          </div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Cost</div>
+          <div class="metric-value">{{ costDisplay }}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Mode / agent</div>
+          <div class="metric-value">{{ modeAgentDisplay }}</div>
         </div>
         <div class="metric">
           <div class="metric-label">Agents</div>
-          <div class="metric-value">
-            {{ Array.isArray(latestSnapshot?.agent_states) ? latestSnapshot.agent_states.length : '—' }}
+          <div class="metric-value metric-value-stack">
+            <div>
+              {{ Array.isArray(latestSnapshot?.agent_states) ? latestSnapshot.agent_states.length : '—' }}
+            </div>
+            <button
+              class="button button-ghost button-small"
+              type="button"
+              @click="openAgentsModal"
+              :disabled="!Array.isArray(latestSnapshot?.agent_states) || latestSnapshot.agent_states.length === 0"
+            >
+              Details
+            </button>
           </div>
         </div>
         <div class="metric">
           <div class="metric-label">Model</div>
-          <div class="metric-value">{{ modelDisplay }}</div>
+          <div class="metric-value">{{ messageModelDisplay }}</div>
         </div>
       </div>
 
-      <div class="footer">
-        <button class="button" type="button" @click="checkHealth" :disabled="isChecking">
-          {{ isChecking ? 'Checking…' : 'Check now' }}
-        </button>
-        <button class="button" type="button" @click="togglePolling">
-          {{ isPolling ? 'Stop auto-check' : 'Start auto-check' }}
-        </button>
-        <button class="button" type="button" @click="openTokenModal">Manage token</button>
-        <div class="hint">
-           <div class="hint-line">GET {{ relayHealthUrl || '—' }}</div>
-           <div v-if="lastError" class="hint-line hint-error">{{ lastError }}</div>
-           <div class="hint-line">WS {{ relayWsUrl || '—' }}</div>
-           <div v-if="wsError" class="hint-line hint-error">{{ wsError }}</div>
-           <div v-else-if="showExchangeError" class="hint-line hint-error">{{ exchangeError }}</div>
-         </div>
-       </div>
       </section>
 
-    <section v-if="hasViewerToken" class="card progress">
-      <div class="progress-header">
-        <div>
-          <div class="label">OpenCode</div>
-          <div class="progress-title">{{ sessionTitle }}</div>
-        </div>
-        <div class="progress-chips">
-          <div class="progress-chip" :class="sessionStatusTone">{{ sessionStatusLabel }}</div>
-          <div class="progress-chip progress-chip-muted">Running {{ runningCount }}</div>
-          <div class="progress-chip progress-chip-muted">Queued {{ queuedCount }}</div>
-        </div>
-      </div>
+    <ProgressCard
+      :open="hasViewerToken"
+      :sessionTitle="sessionTitle"
+      :sessionTitleUpdatedAt="sessionTitleUpdatedAt"
+      :sessionStatusLabel="sessionStatusLabel"
+      :sessionStatusTone="sessionStatusTone"
+      :runningCount="runningCount"
+      :queuedCount="queuedCount"
+      :todos="todos"
+      :todoUpdatedAt="todoUpdatedAt"
+      :latestToast="latestToast"
+      :toastTone="toastTone"
+      :sessionStatus="sessionStatus"
+      :fmtTime="fmtTime"
+    />
 
-      <div class="progress-grid">
-        <div class="progress-panel">
-          <div class="progress-panel-title">Todos</div>
-          <div v-if="todos.length === 0" class="progress-empty">No todos yet.</div>
-          <div v-else class="todo-list">
-            <div v-for="todo in todos" :key="todo.id" class="todo-item" :class="`todo-${todo.status || 'pending'}`">
-              <div class="todo-status">{{ (todo.status || 'pending').replace('_', ' ') }}</div>
-              <div class="todo-content">{{ todo.content }}</div>
-            </div>
-          </div>
-        </div>
+    <ConsoleCard
+      :open="hasViewerToken"
+      :wsStatusTone="wsStatusTone"
+      :wsStatusLabel="wsStatusLabel"
+      :debugMode="debugMode"
+      :thinkingPreview="thinkingPreview"
+      :thinkingBody="thinkingBody"
+      :finalPreview="finalPreview"
+      :finalBody="finalBody"
+      :expandedConsoleSection="expandedConsoleSection"
+      :expandedEntryKey="expandedEntryKey"
+      :logEntries="logEntries"
+      :activeDiff="activeDiff"
+      :toggleConsoleSection="toggleConsoleSection"
+      :toggleExpandedEntry="toggleExpandedEntry"
+      :setActiveDiff="setActiveDiff"
+      :fmtTime="fmtTime"
+      :formatJson="formatJson"
+    />
+</main>
 
-        <div class="progress-panel">
-          <div class="progress-panel-title">Task status</div>
-          <div v-if="latestToast" class="toast" :class="toastTone">
-            <div class="toast-title">{{ latestToast.title || 'Notification' }}</div>
-            <div class="toast-message">{{ latestToast.message }}</div>
-            <div class="toast-meta">{{ fmtTime(latestToast.ts) }}</div>
-          </div>
-          <div v-else class="progress-empty">No recent task notices.</div>
+  <TokenModal
+    :open="isTokenModalOpen"
+    :hasViewerToken="hasViewerToken"
+    :deviceId="deviceId"
+    v-model:relayUrl="relayUrl"
+    v-model:draft="tokenDraft"
+    v-model:debugMode="debugMode"
+    v-model:hideDiff="hideDiff"
+    @save="saveViewerToken"
+    @cancel="closeTokenModal"
+    @clear="clearViewerTokenFromModal"
+  />
 
-          <div v-if="sessionStatus?.type === 'retry'" class="toast toast-warning toast-compact">
-            <div class="toast-title">Retry</div>
-            <div class="toast-message">Attempt {{ sessionStatus.attempt }}: {{ sessionStatus.message }}</div>
-          </div>
-        </div>
-      </div>
-    </section>
+  <DiffModal
+    :diff="activeDiff"
+    v-model:activeFile="activeDiffFile"
+    @close="activeDiff = null"
+  />
 
-    <section v-if="hasViewerToken" class="card console">
-      <div class="console-header">
-        <div>
-          <div class="label">Plugin stream</div>
-          <div class="console-subtitle">Live relay messages, newest first</div>
-        </div>
-        <div class="console-chip" :class="wsStatusTone">{{ wsStatusLabel }}</div>
-      </div>
-        <div class="console-body">
-          <div class="console-highlights">
-            <div
-              class="console-line console-line-interactive console-highlight-line"
-              role="button"
-              tabindex="0"
-              @click="toggleConsoleSection('thinking')"
-              @keydown.enter.prevent="toggleConsoleSection('thinking')"
-              @keydown.space.prevent="toggleConsoleSection('thinking')"
-            >
-              <span class="console-time console-highlight-label">Thinking</span>
-              <span class="console-text">{{ thinkingPreview }}</span>
-            </div>
-            <pre v-if="expandedConsoleSection === 'thinking'" class="console-raw">{{ thinkingBody }}</pre>
-
-            <div
-              class="console-line console-line-interactive console-highlight-line"
-              role="button"
-              tabindex="0"
-              @click="toggleConsoleSection('final')"
-              @keydown.enter.prevent="toggleConsoleSection('final')"
-              @keydown.space.prevent="toggleConsoleSection('final')"
-            >
-              <span class="console-time console-highlight-label">Final</span>
-              <span class="console-text">{{ finalPreview }}</span>
-            </div>
-            <pre v-if="expandedConsoleSection === 'final'" class="console-raw">{{ finalBody }}</pre>
-          </div>
-
-          <div v-if="logEntries.length === 0" class="console-empty">No messages yet.</div>
-          <div v-for="entry in logEntries" :key="entry.id" class="console-entry" :class="`console-entry-${entry.kind}`">
-            <div
-              class="console-line console-line-interactive"
-              role="button"
-              tabindex="0"
-              @click="toggleExpandedEntry(entry)"
-              @keydown.enter.prevent="toggleExpandedEntry(entry)"
-              @keydown.space.prevent="toggleExpandedEntry(entry)"
-            >
-              <span class="console-time">{{ fmtTime(entry.ts) }}</span>
-              <span class="console-text">
-                <span class="console-badge" :class="entry.tone">{{ entry.badge }}</span>
-                {{ entry.text }}
-              </span>
-            </div>
-            <pre
-              v-if="expandedEntryKey === entry.id && entry.kind !== 'diff'"
-              class="console-raw"
-            >{{ entry.details ?? formatJson(entry.raw) }}</pre>
-            <div
-              v-if="expandedEntryKey === entry.id && entry.kind === 'diff'"
-              class="diff-open-trigger"
-              role="button"
-              tabindex="0"
-              @click.stop="setActiveDiff(entry)"
-              @keydown.enter.stop.prevent="setActiveDiff(entry)"
-              @keydown.space.stop.prevent="setActiveDiff(entry)"
-            >
-              View diff details
-            </div>
-            <div
-              v-if="activeDiff?.id === entry.id && entry.kind === 'diff'"
-              class="sr-only"
-              aria-live="polite"
-            >Diff modal open</div>
-          </div>
-        </div>
-      </section>
-  </main>
-
-  <div v-if="isTokenModalOpen" class="modal-backdrop" @click.self="closeTokenModal">
-    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Pairing token">
-      <div class="modal-title">Pairing token</div>
-      <div class="modal-subtitle">
-        Paste the pairing code from <span class="setup-mono">bunx remotecode auth</span> to connect.
-      </div>
-      <input
-        v-model.trim="tokenDraft"
-        class="input modal-input"
-        placeholder="paste pairing code or viewer token"
-        autocomplete="off"
-        spellcheck="false"
-      />
-      <div class="modal-actions">
-        <button class="button" type="button" @click="saveViewerToken" :disabled="!tokenDraft.trim()">
-          Save token
-        </button>
-        <button class="button button-ghost" type="button" @click="closeTokenModal">Cancel</button>
-        <button
-          v-if="hasViewerToken"
-          class="button button-ghost"
-          type="button"
-          @click="clearViewerTokenFromModal"
-        >
-          Clear token
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <div v-if="activeDiff" class="modal-backdrop" @click.self="activeDiff = null">
-    <div class="modal-card diff-modal" role="dialog" aria-modal="true" aria-label="Diff details" tabindex="-1">
-      <div class="diff-modal-header">
-        <div class="modal-title">Diff</div>
-        <button class="diff-close" type="button" @click="activeDiff = null" aria-label="Close diff">×</button>
-      </div>
-      <div class="diff-tabs" v-if="activeDiff?.diffBlocks?.length">
-        <button
-          v-for="block in activeDiff.diffBlocks"
-          :key="block.file"
-          type="button"
-          class="diff-tab"
-          :class="{ 'diff-tab-active': activeDiffFile === block.file }"
-          @click="activeDiffFile = block.file"
-        >
-          {{ block.file }}
-        </button>
-      </div>
-
-      <div class="diff-blocks" v-if="activeDiffBlock">
-        <div
-          class="diff-block"
-          :class="activeDiffBlock.language ? `language-${activeDiffBlock.language}` : 'language-text'"
-          :data-lang="activeDiffBlock.language || 'text'"
-        >
-          <div class="diff-block-title">{{ activeDiffBlock.file }}</div>
-          <div class="diff-columns">
-            <div class="diff-col diff-col-left">
-              <div class="diff-col-label">Before</div>
-              <pre class="diff-pre">{{ activeDiffBlock.columns.before }}</pre>
-            </div>
-            <div class="diff-col diff-col-right">
-              <div class="diff-col-label">After</div>
-              <pre class="diff-pre">{{ activeDiffBlock.columns.after }}</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <AgentsModal
+    :open="isAgentsModalOpen"
+    :agents="latestSnapshot?.agent_states"
+    :updatedAt="latestSnapshot?.ts"
+    @close="closeAgentsModal"
+  />
 </template>

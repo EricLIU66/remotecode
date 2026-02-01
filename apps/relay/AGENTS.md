@@ -29,6 +29,7 @@ apps/relay/
 - ESM-only modules with explicit `.js` extensions.
 - REST responses use snake_case keys.
 - `DATABASE_URL` unset → in-memory storage.
+- Prefer professional, well-maintained packages over rolling custom implementations; adding a dependency is OK when it materially improves correctness/maintainability.
 
 ## ANTI-PATTERNS
 - Do not allow WS connections without token validation.

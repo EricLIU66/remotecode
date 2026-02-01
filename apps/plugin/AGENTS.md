@@ -15,6 +15,7 @@ OpenCode desktop plugin stub that holds live agent/session state and streams it 
 - Keep state keys aligned with relay payloads (`agents`, `sessionSummary`, `events`).
 - ESM modules with explicit `.js` extensions.
 - Treat relay downtime as expected: reconnect w/ backoff, avoid error-level spam.
+- Prefer professional, well-maintained packages over rolling custom implementations; adding a dependency is OK when it materially improves correctness/maintainability.
 
 ## ANTI-PATTERNS
 - Avoid adding inbound network listeners; plugin is outbound-only.
